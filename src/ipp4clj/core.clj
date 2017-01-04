@@ -7,7 +7,7 @@
 (require '[clojure.data.avl :as avl])
 (require '[clojure.core.matrix.linear :as la])
 
-(defn probit [x] (cdFnormal x))
+(defn probit [x] (cdf-normal x))
 
 (defn sample-ppp
   "Generates a realization from a 1 dimensional Poisson point process with given
