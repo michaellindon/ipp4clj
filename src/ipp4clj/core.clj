@@ -41,8 +41,10 @@
 
 
 
-(defn sample-forward
-    "Sample F[i+1] | F[i] where F[j] is F(t(j))"
+
+(defn sample-neighbour
+    "Sample F[i+1] | F[i] where F[j] is F(t(j)) OR
+     Sample F[i-1 | F[i] depending on context]"
     [F regression innovation delay]
     (let [X (regression delay)
           q (sample-safe-mvn (innovation delay))]
@@ -70,7 +72,9 @@
   [variance length-scale]
   (let [cond-set (atom (avl/sorted-map))
         reg (partial regression length-scale)
-        inn (partial innovation variance length-scale)]
+        inn (partial innovation variance length-scale)
+        rev-reg (partial reverse-regression length-scale)
+        rev-inn (partial reverse-innovation variance length-scale)]
    (fn [t]
     (if (contains? @cond-set t) (@cond-set t)
      (let [vor (avl/nearest @cond-set < t)
@@ -87,9 +91,12 @@
                     (do (swap! cond-set assoc t Ft) Ft))
        has-vor (let [[tv Fv] vor
                         delay (- t tv)
-                        Ft (sample-forward Fv reg inn delay)]
+                        Ft (sample-neighbour Fv reg inn delay)]
                     (do (swap! cond-set assoc t Ft) Ft))
-       has-nach (do 5.0)
+       has-nach (let [[tn Fn] nach
+                        delay (- tn t)
+                        Ft (sample-neighbour Fn rev-reg rev-inn delay)]
+                    (do (swap! cond-set assoc t Ft) Ft))
        :else (let [Ft (sample-safe-mvn (statcov variance length-scale))]
               (do (swap! cond-set assoc t Ft) Ft))))))))
 
