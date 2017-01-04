@@ -6,6 +6,7 @@
 (require '[incanter.charts :as ip])
 (require '[clojure.data.avl :as avl])
 (require '[clojure.core.matrix.linear :as la])
+(use 'clojure.core.matrix.operators)
 
 (defn probit [x] (cdf-normal x))
 
@@ -45,7 +46,7 @@
     [F regression innovation delay]
     (let [X (regression delay)
           q (sample-safe-mvn (innovation delay))]
-     (add (mmul X F) q)))
+     (+ (mmul X F) q)))
 
 (defn sample-sandwich
   "Sample F[i] | F[i-1],F[i+1] where F[j] is F(t(j))"
@@ -56,11 +57,12 @@
         delay-nv (+ delay-n delay-v)
         Xnv (regression delay-nv)
         Qnv (innovation delay-nv)
+        Qnvi (inverse Qnv)
         XvFv (mmul Xv Fv)
         XnvFv (mmul Xnv Fv)
         QvXn' (mmul Qv (transpose Xn))
-        mean-vector (+ XvFv (mmul QvXn' (solve Qnv (- Fn XnvFv))))
-        cov-matrix (- Qv (mmul QvXn' (solve Qnv (transpose QvXn'))))]
+        mean-vector (+ XvFv (mmul QvXn' Qnvi (- Fn XnvFv)))
+        cov-matrix (- Qv (mmul QvXn' Qnvi (transpose QvXn')))]
     (+ mean-vector (sample-safe-mvn cov-matrix))))
 
 (defn sample-gp
@@ -81,7 +83,8 @@
                        [tn Fn] nach
                        delay-v (- t tv)
                        delay-n (- tn t)
-                       Ft (sample-sandwich Fv delay-v Fn delay-n regression innovation)])
+                       Ft (sample-sandwich Fv delay-v Fn delay-n reg inn)]
+                    (do (swap! cond-set assoc t Ft) Ft))
        has-vor (let [[tv Fv] vor
                         delay (- t tv)
                         Ft (sample-forward Fv reg inn delay)]
