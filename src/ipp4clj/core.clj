@@ -1,4 +1,4 @@
-(ns combtest.core)
+(ns ipp4clj.core)
 
 (use '(incanter stats))
 (use 'clojure.core.matrix)
