@@ -105,32 +105,59 @@
 
 (defn forward-filter
   "Returns (m+1,M+1) from (m,M)"
-  [mM y-delay]
+  [mM params]
   (let [[m M] mM
-        [y delay] y-delay
-        Q (innovation delay)
-        X (regression delay)
+        [y X Q] params
         XMXQ (+ Q (mmul X M (transpose X)))
         m-out (+ (mmul X m) (/ (mmul (slice XMXQ 1 0)
-                                     (- y mu (mmul (slice X 0 0) m)))
-                               (+ 1 (mget XMXQ 0 0))))
-        M-out (- XMXQ (/ (mmul (slice XMXQ 1 0) (slice XMXQ 0 0))
-                         (+ 1 (mget XMXQ 0 0))))]
+                                     (- y (mmul (slice X 0 0) m)))
+                               (+ observation-variance (mget XMXQ 0 0))))
+        M-out (- XMXQ (/ (outer-product (slice XMXQ 1 0) (slice XMXQ 0 0))
+                         (+ observation-variance (mget XMXQ 0 0))))]
       [m-out M-out]))
 
 (defn backward-sample
   "Sample F[i] from F[i+1]"
-  [mM F-delay]
-  (let [[m M] mM
-        [F delay] F-delay
-        Q (innovation delay)
-        X (regression delay)
+  [F params]
+  (let [[[m M] X Q] params
         XMXQ (+ Q (mmul X M (transpose X)))
         XMXQi (inverse XMXQ)
         MX' (mmul M (transpose X))
         mean-vector (+ m (mmul MX' XMXQi (- F (mmul X m))))
         cov-matrix (- M (mmul MX' XMXQi (transpose MX')))]
       (+ mean-vector (sample-safe-mvn cov-matrix))))
+
+(defn FFBS
+  "Forward Filtering Backward Sampling Algorithm"
+  [times observations observation-variance variance length-scale]
+  (let [delays (map - (rest times) times)
+        Qs (map (partial innovation variance length-scale) delays)
+        Xs (map (partial regression length-scale) delays)
+        minit (let [P (statcov 1 1)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0))))
+        Minit (let [P (statcov 1 1)] (- P
+                                        (/ (outer-product (slice P 1 0)
+                                                          (slice P 0 0))
+                                           (+ 1 (mget P 0 0)))))
+        mMs (reductions forward-filter [minit Minit] (map vector (rest y) Xs Qs))]))
+
+(def grid (range 0 100 1))
+(def gp (sample-gp 1 1))
+(def F (partial first-f gp))
+(def y (map (fn [x] (+ (F x)  (sample-normal 1))) grid))
+(def delays (map (fn [x] (let [[tn tv] x] (- tn tv))) (map vector (rest grid) grid)))
+(def Qs (map (partial innovation 1 1) delays))
+(def Xs (map (partial regression 1) delays))
+(def minit (let [P (statcov 1 1)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0)))))
+(def Minit (let [P (statcov 1 1)] (- P
+                                     (/ (outer-product (slice P 1 0)
+                                                       (slice P 0 0))
+                                        (+ 1 (mget P 0 0))))))
+
+(def mMs (reductions forward-filter [minit Minit] (map vector (rest y) Xs Qs)))
+
+
+(def Fn (+ (first (last mMs)) (sample-safe-mvn (second (last mMs)))))
+(reverse (reductions backward-sample Fn (reverse (map vector (butlast mMs) Xs Qs))))
 
 (defn countf []
   (let [counter (atom 0)]
