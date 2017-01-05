@@ -103,6 +103,35 @@
 (defn first-f [f x] (first (f x)))
 
 
+(defn forward-filter
+  "Returns (m+1,M+1) from (m,M)"
+  [mM y-delay]
+  (let [[m M] mM
+        [y delay] y-delay
+        Q (innovation delay)
+        X (regression delay)
+        XMXQ (+ Q (mmul X M (transpose X)))
+        m-out (+ (mmul X m) (/ (mmul (slice XMXQ 1 0)
+                                     (- y mu (mmul (slice X 0 0) m)))
+                               (+ 1 (mget XMXQ 0 0))))
+        M-out (- XMXQ (/ (mmul (slice XMXQ 1 0) (slice XMXQ 0 0))
+                         (+ 1 (mget XMXQ 0 0))))]
+      [m-out M-out]))
+
+(defn backward-sample
+  "Sample F[i] from F[i+1]"
+  [mM F-delay]
+  (let [[m M] mM
+        [F delay] F-delay
+        Q (innovation delay)
+        X (regression delay)
+        XMXQ (+ Q (mmul X M (transpose X)))
+        XMXQi (inverse XMXQ)
+        MX' (mmul M (transpose X))
+        mean-vector (+ m (mmul MX' XMXQi (- F (mmul X m))))
+        cov-matrix (- M (mmul MX' XMXQi (transpose MX')))]
+      (+ mean-vector (sample-safe-mvn cov-matrix))))
+
 (defn countf []
   (let [counter (atom 0)]
     (fn [x] (do (swap! counter inc) @counter))))
