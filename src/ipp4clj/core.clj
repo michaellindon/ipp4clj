@@ -37,9 +37,6 @@
    (mmul U D z)))
 
 
-
-
-
 (defn sample-neighbour
  "Sample F[i+1] | F[i] where F[j] is F(t(j)) OR
  Sample F[i-1 | F[i] depending on context]"
@@ -67,8 +64,8 @@
 
 (defn sample-gp
  "Gaussian Process Function"
- [variance length-scale]
- (let [cond-set (atom (avl/sorted-map))
+ [known-values variance length-scale]
+ (let [cond-set (atom (into (avl/sorted-map) known-values))
        reg (partial regression length-scale)
        inn (partial innovation variance length-scale)
        rev-reg (partial reverse-regression length-scale)
@@ -111,9 +108,10 @@
        Qs (map (partial innovation variance length-scale) delays)
        Xs (map (partial regression length-scale) delays)
        P (statcov 1 1)
-       minit (/ (* (slice P 1 0) (first observations)) (+ 1 (mget P 0 0)))
+       minit (/ (* (slice P 1 0) (first observations)) (+ observation-variance
+                                                          (mget P 0 0)))
        Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
-                     (+ 1 (mget P 0 0))))
+                     (+ observation-variance (mget P 0 0))))
 
        forward-filter (fn [mM params]
                         (let [[m M] mM
@@ -148,22 +146,46 @@
        Fn (+ (first (last mMs)) (sample-safe-mvn (second (last mMs))))
        Fs (reverse (reductions backward-sample
                                Fn (reverse (map vector (butlast mMs) Xs Qs))))]
-   Fs))
+   (zipmap times Fs)))
 
-(def grid (range 0 1 0.01))
-(def gp (sample-gp 1 1))
+(def grid (range 0 10 3))
+(def gp (sample-gp {} 1 1))
 (def F (partial first-f gp))
-(def observation-variance 0.0001)
+(def observation-variance 0.000001)
 (def y (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt observation-variance)))) grid))
-(FFBS grid y observation-variance 1 1)
+(def pivots (FFBS grid y observation-variance 1 1))
+(def F1 (partial first-f (sample-gp pivots 1 1)))
+(def F2 (partial first-f (sample-gp pivots 1 1)))
+(def F3 (partial first-f (sample-gp pivots 1 1)))
+(def F4 (partial first-f (sample-gp pivots 1 1)))
+(def F5 (partial first-f (sample-gp pivots 1 1)))
+(doto (ip/scatter-plot grid y)
+  (ip/add-function F1 0 10)
+  (ip/add-function F2 0 10)
+  (ip/add-function F3 0 10)
+  (ip/add-function F4 0 10)
+  (ip/add-function F5 0 10)
+  ic/view)
 
+(def gitter (range 0 10 0.01))
+(proto-repl-charts.charts/custom-chart
+  "Custom"
+  {:data {:columns
+          [(cons "x" gitter)
+           (cons "F1" (map F1 gitter))
+           (cons "F2" (map F2 gitter))
+           (cons "F3" (map F3 gitter))
+           (cons "F4" (map F4 gitter))
+           (cons "F5" (map F5 gitter))]
+          :point {:show false}
+          :x "x"}})
 
 
 
 (def delays (map (fn [x] (let [[tn tv] x] (- tn tv))) (map vector (rest grid) grid)))
 (def Qs (map (partial innovation 1 1) delays))
 (def Xs (map (partial regression 1) delays))
-(def minit (let [P (statcov 1 1)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0)))))
+(def minit (let [P (statcov 1 1)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0))
 (def Minit (let [P (statcov 1 1)] (- P
                                      (/ (outer-product (slice P 1 0)
                                                        (slice P 0 0))
@@ -180,3 +202,30 @@
     (fn [x] (do (swap! counter inc) @counter))))
 
 (ic/view (ip/histogram (sample-ppp (comp (partial * 10000) probit sin) 10000 0 100) :nbins 100))
+
+
+(proto-repl-charts.charts/custom-chart
+  "Custom"
+  {:data { :type "line" :columns [["foo" [1 2 3]]]}})
+
+(proto-repl-charts.charts/custom-chart
+  "Custom"
+  {:data {:columns
+          [(cons "x" grid)
+           (cons "gp" (map (comp probit F) grid))
+           (cons "gp+" (map (fn [x] (probit (+ (F x) 0.5))) grid))
+           (cons "gp-" (map (fn [x] (probit (- (F x) 0.5))) grid))]
+          :types {:gp "spline" :gp+ "area" :gp- "area"}
+          :colors {:gp- "grey" :gp+ "grey"}
+          :x "x"}})
+
+(proto-repl-charts.charts/custom-chart
+  "Custom"
+  {:data {:columns
+          [(cons "x" grid)
+           (cons "gp" (map (comp probit F) grid))
+           (cons "gp+" (map (fn [x] (probit (+ (F x) 0.5))) grid))
+           (cons "gp-" (map (fn [x] (probit (- (F x) 0.5))) grid))]
+          :types {:gp "spline" :gp+ "area" :gp- "area"}
+          :x "x"
+          :groups [["gp" "gp+" "gp-"]]}})
