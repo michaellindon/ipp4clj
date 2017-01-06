@@ -64,12 +64,12 @@
 
 (defn sample-gp
  "Gaussian Process Function"
- [known-values variance length-scale]
+ [known-values gp-variance gp-length-scale]
  (let [cond-set (atom (into (avl/sorted-map) known-values))
-       reg (partial regression length-scale)
-       inn (partial innovation variance length-scale)
-       rev-reg (partial reverse-regression length-scale)
-       rev-inn (partial reverse-innovation variance length-scale)]
+       reg (partial regression gp-length-scale)
+       inn (partial innovation gp-variance gp-length-scale)
+       rev-reg (partial reverse-regression gp-length-scale)
+       rev-inn (partial reverse-innovation gp-variance gp-length-scale)]
    (fn [t]
      (if (contains? @cond-set t) (@cond-set t)
        (let [vor (avl/nearest @cond-set < t)
@@ -92,7 +92,7 @@
                           delay (- tn t)
                           Ft (sample-neighbour Fn rev-reg rev-inn delay)]
                       (do (swap! cond-set assoc t Ft) Ft))
-          :else (let [Ft (sample-safe-mvn (statcov variance length-scale))]
+          :else (let [Ft (sample-safe-mvn (statcov gp-variance gp-length-scale))]
                   (do (swap! cond-set assoc t Ft) Ft))))))))
 
 (defn first-f [f x] (first (f x)))
@@ -103,15 +103,15 @@
 
 (defn FFBS
  "Forward Filtering Backward Sampling Algorithm"
- [times observations observation-variance variance length-scale]
+ [times observations observation-variance gp-variance gp-length-scale]
  (let [delays (map - (rest times) times)
-       Qs (map (partial innovation variance length-scale) delays)
-       Xs (map (partial regression length-scale) delays)
+       Qs (map (partial innovation gp-variance gp-length-scale) delays)
+       Xs (map (partial regression gp-length-scale) delays)
        P (statcov 1 1)
-       minit (/ (* (slice P 1 0) (first observations)) (+ observation-variance
-                                                          (mget P 0 0)))
+       mar-obs-var-1 (+ observation-variance (mget P 0 0))
+       minit (/ (* (slice P 1 0) (first observations)) mar-obs-var-1)
        Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
-                     (+ observation-variance (mget P 0 0))))
+                     mar-obs-var-1))
 
        forward-filter (fn [mM params]
                         (let [[m M] mM
@@ -120,13 +120,14 @@
                               XMXQ (+ Q (mmul X M (transpose X)))
                               XMXQH (slice XMXQ 0 0)
                               HXMXQH (mget XMXQ 0 0)
+                              mar-obs-var (+ observation-variance HXMXQH)
                               m-out (+ Xm
                                        (/ (mmul XMXQH (- y (mget Xm 0)))
-                                          (+ observation-variance HXMXQH)))
+                                          mar-obs-var))
 
                               M-out (- XMXQ
                                        (/ (outer-product XMXQH XMXQH)
-                                          (+ observation-variance HXMXQH)))]
+                                          mar-obs-var))]
                           [m-out M-out]))
 
        backward-sample (fn [F params]
@@ -148,10 +149,51 @@
                                Fn (reverse (map vector (butlast mMs) Xs Qs))))]
    (zipmap times Fs)))
 
-(def grid (range 0 10 3))
+
+(defn log-likelihood
+ "Evaluates the log likelihood"
+ [times observations observation-variance gp-variance gp-length-scale]
+ (let [delays (map - (rest times) times)
+       Qs (map (partial innovation gp-variance gp-length-scale) delays)
+       Xs (map (partial regression gp-length-scale) delays)
+       P (statcov 1 1)
+       minit (/ (* (slice P 1 0) (first observations)) (+ observation-variance
+                                                          (mget P 0 0)))
+       Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
+                     (+ observation-variance (mget P 0 0))))
+       mar-obs-var-1 (+ observation-variance (mget P 0 0))
+       sinit (negate (+ (* 0.5 (log (* Math/PI 2 mar-obs-var-1)))
+                        (* (/ 0.5 mar-obs-var-1) (square (first observations)))))
+       forward-filter (fn [smM params]
+                        (let [[partial-sum m M] smM
+                              [y X Q] params
+                              Xm (mmul X m)
+                              Xm0 (mget Xm 0)
+                              XMXQ (+ Q (mmul X M (transpose X)))
+                              XMXQH (slice XMXQ 0 0)
+                              HXMXQH (mget XMXQ 0 0)
+                              mar-obs-var (+ observation-variance HXMXQH)
+                              m-out (+ Xm
+                                       (/ (mmul XMXQH (- y Xm0)) mar-obs-var))
+
+                              M-out (- XMXQ
+                                       (/ (outer-product XMXQH XMXQH) mar-obs-var))
+                              residual (- y Xm0)
+                              exponent (* (/ 0.5 mar-obs-var) (square residual))
+                              logdensity (negate (+ (* 0.5 (log (* mar-obs-var
+                                                                   Math/PI 2)))
+                                                    exponent))
+                              s-out (+ partial-sum logdensity)]
+                          [s-out m-out M-out]))]
+   (first (reduce forward-filter
+                   [sinit minit Minit]
+                   (map vector (rest observations) Xs Qs)))))
+
+
+(def grid (range 0 10 0.01))
 (def gp (sample-gp {} 1 1))
 (def F (partial first-f gp))
-(def observation-variance 0.000001)
+(def observation-variance 1)
 (def y (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt observation-variance)))) grid))
 (def pivots (FFBS grid y observation-variance 1 1))
 (def F1 (partial first-f (sample-gp pivots 1 1)))
