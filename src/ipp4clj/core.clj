@@ -7,6 +7,7 @@
 (require '[clojure.data.avl :as avl])
 (require '[clojure.core.matrix.linear :as la])
 (use 'clojure.core.matrix.operators)
+(require '[clojure.math.combinatorics :as combo])
 
 (defn probit [x] (cdf-normal x))
 
@@ -107,7 +108,7 @@
  (let [delays (map - (rest times) times)
        Qs (map (partial innovation gp-variance gp-length-scale) delays)
        Xs (map (partial regression gp-length-scale) delays)
-       P (statcov 1 1)
+       P (statcov gp-variance gp-length-scale)
        mar-obs-var-1 (+ observation-variance (mget P 0 0))
        minit (/ (* (slice P 1 0) (first observations)) mar-obs-var-1)
        Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
@@ -156,7 +157,7 @@
  (let [delays (map - (rest times) times)
        Qs (map (partial innovation gp-variance gp-length-scale) delays)
        Xs (map (partial regression gp-length-scale) delays)
-       P (statcov 1 1)
+       P (statcov gp-variance gp-length-scale)
        minit (/ (* (slice P 1 0) (first observations)) (+ observation-variance
                                                           (mget P 0 0)))
        Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
@@ -190,11 +191,16 @@
                    (map vector (rest observations) Xs Qs)))))
 
 
-(def grid (range 0 10 0.01))
+(def grid (range 1 10 1))
 (def gp (sample-gp {} 1 1))
 (def F (partial first-f gp))
-(def observation-variance 1)
+(def observation-variance 0.3)
 (def y (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt observation-variance)))) grid))
+(/ (log-likelihood grid y observation-variance 1.4 4.4)
+   (log-likelihood grid y observation-variance 10 10))
+(/ (trusted-log-likelihood grid y observation-variance 1.4 4.4)
+   (trusted-log-likelihood grid y observation-variance 10 10))
+(log (pdf-normal (first y) :mean 0 :sd (sqrt (+ observation-variance 10))))
 (def pivots (FFBS grid y observation-variance 1 1))
 (def F1 (partial first-f (sample-gp pivots 1 1)))
 (def F2 (partial first-f (sample-gp pivots 1 1)))
@@ -227,8 +233,8 @@
 (def delays (map (fn [x] (let [[tn tv] x] (- tn tv))) (map vector (rest grid) grid)))
 (def Qs (map (partial innovation 1 1) delays))
 (def Xs (map (partial regression 1) delays))
-(def minit (let [P (statcov 1 1)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0))
-(def Minit (let [P (statcov 1 1)] (- P
+(def minit (let [P (statcov gp-variance gp-length-scale)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0))
+(def Minit (let [P (statcov gp-variance gp-length-scale)] (- P
                                      (/ (outer-product (slice P 1 0)
                                                        (slice P 0 0))
                                         (+ 1 (mget P 0 0))))))
