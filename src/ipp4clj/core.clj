@@ -215,19 +215,19 @@
        HXD+1 (inc HXD)
        XC (mmul X C)
        HXC (mget XC 0)
-       prec+1 (/ (square HXD+1) mar-obs-var)
-       pm+1 (/ (* (- y HXC) HXD+1) mar-obs-var)
+       prec+1 (+ prec (/ (square HXD+1) mar-obs-var))
+       pm+1 (+ pm (/ (* (- y HXC) HXD+1) mar-obs-var))
        F (/ XMXQH mar-obs-var)
        C+1 (+ XC (negate (* F HXC)) (* F y))
-       D+1 (- XC F (* F HXD))]
+       D+1 (- XD F (* F HXD))]
       [pm+1 prec+1 C+1 D+1 m+1 M+1]))
 
    ffs (reduce forward-filter
-                         [(/ (first obs) mar-obs-var-1) (/ 1 mar-obs-var-1) Cinit Dinit minit Minit]
-                         (map vector (rest obs) Xs Qs))
+               [(/ (first obs) mar-obs-var-1) (/ 1 mar-obs-var-1) Cinit Dinit minit Minit]
+               (map vector (rest obs) Xs Qs))
    precision (second ffs)
    precxmean (first ffs)]
-  [(/ precxmean precision) (/ 1 precision)]))
+  [(/ precxmean precision) (/ 1.0 precision)]))
 
 
 
@@ -269,10 +269,10 @@
 (ic/view (ip/histogram (sample-normal 10000 :mean 10 :sd 3) :nbins 100))
 
 
-(def grid (range 1 10 7))
+(def grid (range 1 30 1))
 (def gp (sample-gp {} 1 1))
 (def F (partial first-f gp))
 (def obs-var 1.0)
-(def y (map (fn [x] (+ (F x) 10  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) grid))
+(def y (map (fn [x] (+ (F x) -100  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) grid))
 (sample-gp-mean grid y obs-var 1 1)
 (trusted-mean-conditional grid y obs-var 1 1)
