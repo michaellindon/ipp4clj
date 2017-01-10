@@ -8,6 +8,7 @@
 (require '[clojure.core.matrix.linear :as la])
 (use 'clojure.core.matrix.operators)
 (require '[clojure.math.combinatorics :as combo])
+(require '[clojure.tools.trace :as db])
 
 (defn probit [x] (cdf-normal x))
 
@@ -158,11 +159,10 @@
        Qs (map (partial innovation gp-variance gp-length-scale) delays)
        Xs (map (partial regression gp-length-scale) delays)
        P (statcov gp-variance gp-length-scale)
-       minit (/ (* (slice P 1 0) (first observations)) (+ observation-variance
-                                                          (mget P 0 0)))
-       Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
-                     (+ observation-variance (mget P 0 0))))
        mar-obs-var-1 (+ observation-variance (mget P 0 0))
+       minit (/ (* (slice P 1 0) (first observations)) mar-obs-var-1)
+       Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
+                     mar-obs-var-1))
        sinit (negate (+ (* 0.5 (log (* Math/PI 2 mar-obs-var-1)))
                         (* (/ 0.5 mar-obs-var-1) (square (first observations)))))
        forward-filter (fn [smM params]
@@ -191,6 +191,69 @@
                    (map vector (rest observations) Xs Qs)))))
 
 
+(defn sample-slice
+ "Sample a univariate unnormalized log-density g from position x with length L"
+ [g w x]
+ (let [y (+ (g x) (negate (sample-exp 1)))
+       u (sample-beta 1)
+       lower-bound (first (filter (fn [x] (< (g x) y))
+                                  (iterate  (fn [x] (- x w))
+                                            (- x (* u w)))))
+       upper-bound (first (filter (fn [x] (< (g x) y))
+                                  (iterate (fn [x] (+ x w))
+                                           (+ x (* (- 1 u) w)))))]
+   (loop [l lower-bound
+          u upper-bound]
+     (let [z (first (sample-uniform 1 :min l :max u))]
+       (cond
+         (> (g z) y) z
+         (> z x) (recur l z)
+         :else (recur z u))))))
+
+(defn sample-gp-mean
+ [times observations observation-variance gp-variance gp-length-scale]
+ (let [delays (map - (rest times) times)
+       Qs (map (partial innovation gp-variance gp-length-scale) delays)
+       Xs (map (partial regression gp-length-scale) delays)
+       P (statcov gp-variance gp-length-scale)
+       mar-obs-var-1 (+ observation-variance (mget P 0 0))
+       minit (/ (* (slice P 1 0) (first observations)) mar-obs-var-1)
+       Minit (- P (/ (outer-product (slice P 1 0) (slice P 0 0))
+                     mar-obs-var-1))
+       Cinit (* (slice P 1 0) (/ (first observations) mar-obs-var-1))
+       Dinit (negate (/ (slice P 1 0) mar-obs-var-1))
+       forward-filter (fn [acc params]
+                        (let [[pm prec C D m M] acc
+                              [y X Q] params
+                              Xm (mmul X m)
+                              Xm0 (mget Xm 0)
+                              XMXQ (+ Q (mmul X M (transpose X)))
+                              XMXQH (slice XMXQ 0 0)
+                              HXMXQH (mget XMXQ 0 0)
+                              mar-obs-var (+ observation-variance HXMXQH)
+                              prec-out (/ (square (inc (mget (mmul X D) 0))) mar-obs-var)
+                              pm-out (/ (* (- y (mget (mmul X C) 0)) (inc (mget (mmul X D) 0))) mar-obs-var)
+                              F (/ XMXQH mar-obs-var)
+                              C-out (+ (mmul X C) (negate (* F (mget (mmul X C) 0))) (* F y))
+                              D-out (- (mmul X D) F (* F (mget (mmul X D) 0)))
+                              m-out (+ Xm
+                                       (/ (mmul XMXQH (- y Xm0)) mar-obs-var))
+
+                              M-out (- XMXQ
+                                       (/ (outer-product XMXQH XMXQH) mar-obs-var))]
+                          [pm-out prec-out C-out D-out m-out M-out]))
+       ffs (reduce forward-filter
+                             [(/ (first observations) mar-obs-var-1) (/ 1 mar-obs-var-1) Cinit Dinit minit Minit]
+                             (map vector (rest observations) Xs Qs))
+       precision (second ffs)
+       precxmean (first ffs)]
+   [(/ precxmean precision) (/ 1 precision)]))
+
+
+
+
+
+
 (def grid (range 1 10 1))
 (def gp (sample-gp {} 1 1))
 (def F (partial first-f gp))
@@ -215,65 +278,20 @@
   (ip/add-function F5 0 10)
   ic/view)
 
-(def gitter (range 0 10 0.01))
-(proto-repl-charts.charts/custom-chart
-  "Custom"
-  {:data {:columns
-          [(cons "x" gitter)
-           (cons "F1" (map F1 gitter))
-           (cons "F2" (map F2 gitter))
-           (cons "F3" (map F3 gitter))
-           (cons "F4" (map F4 gitter))
-           (cons "F5" (map F5 gitter))]
-          :point {:show false}
-          :x "x"}})
 
 
 
-(def delays (map (fn [x] (let [[tn tv] x] (- tn tv))) (map vector (rest grid) grid)))
-(def Qs (map (partial innovation 1 1) delays))
-(def Xs (map (partial regression 1) delays))
-(def minit (let [P (statcov gp-variance gp-length-scale)] (/ (mmul (slice P 1 0) (first y)) (+ 1 (mget P 0 0))
-(def Minit (let [P (statcov gp-variance gp-length-scale)] (- P
-                                     (/ (outer-product (slice P 1 0)
-                                                       (slice P 0 0))
-                                        (+ 1 (mget P 0 0))))))
-
-(def mMs (reductions forward-filter [minit Minit] (map vector (rest y) Xs Qs)))
 
 
-(def Fn (+ (first (last mMs)) (sample-safe-mvn (second (last mMs)))))
-(reverse (reductions backward-sample Fn (reverse (map vector (butlast mMs) Xs Qs))))
-
-(defn countf []
-  (let [counter (atom 0)]
-    (fn [x] (do (swap! counter inc) @counter))))
-
-(ic/view (ip/histogram (sample-ppp (comp (partial * 10000) probit sin) 10000 0 100) :nbins 100))
+(variance (take 10000 (iterate (partial sample-slice (comp log pdf-exp) 1) 0)))
+(ic/view (ip/histogram (take 10000 (iterate (partial sample-slice (comp log (fn [x] (pdf-normal x :mean 10 :sd 3))) 0.2) 0.5)) :nbins 100))
+(ic/view (ip/histogram (sample-normal 10000 :mean 10 :sd 3) :nbins 100))
 
 
-(proto-repl-charts.charts/custom-chart
-  "Custom"
-  {:data { :type "line" :columns [["foo" [1 2 3]]]}})
-
-(proto-repl-charts.charts/custom-chart
-  "Custom"
-  {:data {:columns
-          [(cons "x" grid)
-           (cons "gp" (map (comp probit F) grid))
-           (cons "gp+" (map (fn [x] (probit (+ (F x) 0.5))) grid))
-           (cons "gp-" (map (fn [x] (probit (- (F x) 0.5))) grid))]
-          :types {:gp "spline" :gp+ "area" :gp- "area"}
-          :colors {:gp- "grey" :gp+ "grey"}
-          :x "x"}})
-
-(proto-repl-charts.charts/custom-chart
-  "Custom"
-  {:data {:columns
-          [(cons "x" grid)
-           (cons "gp" (map (comp probit F) grid))
-           (cons "gp+" (map (fn [x] (probit (+ (F x) 0.5))) grid))
-           (cons "gp-" (map (fn [x] (probit (- (F x) 0.5))) grid))]
-          :types {:gp "spline" :gp+ "area" :gp- "area"}
-          :x "x"
-          :groups [["gp" "gp+" "gp-"]]}})
+(def grid (range 1 10 7))
+(def gp (sample-gp {} 1 1))
+(def F (partial first-f gp))
+(def observation-variance 1.0)
+(def y (map (fn [x] (+ (F x) 10  (sample-normal 1 :mean 0 :sd (sqrt observation-variance)))) grid))
+(sample-gp-mean grid y observation-variance 1 1)
+(trusted-mean-conditional grid y observation-variance 1 1)
