@@ -50,8 +50,18 @@
        exponent (* 0.5 (dot observations (la/solve cov-matrix observations)))
        normalizer (+ (* 0.5 (log (det cov-matrix)))
                      (* p 0.5 (log (* 2 Math/PI))))]
-   (negate (+ normalizer exponent)
+   (negate (+ normalizer exponent))))
 
+(defn trusted-mean-conditional
+ [times observations observation-variance gp-variance gp-length-scale]
+ (let [p (ic/length times)
+       I (identity-matrix p)
+       K (matern-cov-matrix times gp-variance gp-length-scale)
+       cov-matrix (+ (* observation-variance I) K)
+       ones (fill (new-vector p) 1.0)
+       prec (dot ones (la/solve cov-matrix ones))
+       precxmean (dot ones (la/solve cov-matrix observations))]
+   [(/ precxmean prec) (/ 1 prec)]))
 ; (defn sample-gp
 ;  "Gaussian Process Function"
 ;  [gp-variance covariance-kernel]
@@ -65,8 +75,3 @@
 ;                                        :Fo [F-t])
 ;                  F-t))
 ;            3)))))
-
-         (let [l (/ (sqrt 5) gp-length-scale)
-               dl (* d l)
-               (* (+ 1 dl (/ (square dl) 3)
-                   (exp (negate dl))))]))))
