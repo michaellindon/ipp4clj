@@ -109,73 +109,78 @@
         minit (/ (* (slice P 1 0) (first obs)) mar-obs-var-1)
         HP (slice P 0 0)
         Minit (- P (/ (outer-product HP HP) mar-obs-var-1))]
-    [delays Qs Xs P mar-obs-var-1 minit Minit]))
+    [delays Qs Xs P HP mar-obs-var-1 minit Minit]))
 
 
-(defn ff-params
- [m M params obs-var]
- (let [[y X Q] params
+(defn forward-filter
+ [inputs params]
+ (let [[m M _ _ _] inputs
+       [y obs-var X Q] params
        Xm (mmul X m)
-       HXm (mget Xm 0)
+       mar-obs-mean (mget Xm 0)
        XMXQ (+ Q (mmul X M (transpose X)))
        XMXQH (slice XMXQ 0 0)
        HXMXQH (mget XMXQ 0 0)
        mar-obs-var (+ obs-var HXMXQH)
-       residual (- y HXm)
+       residual (- y mar-obs-mean)
        m-out (+ Xm (/ (mmul XMXQH residual) mar-obs-var))
        M-out (- XMXQ (/ (outer-product XMXQH XMXQH) mar-obs-var))]
-   [m-out M-out residual mar-obs-var XMXQH]))
+   [m-out M-out mar-obs-mean mar-obs-var XMXQH]))
 
+(defn backward-compose
+ [m M X Q]
+ (let [XMXQ (+ Q (mmul X M (transpose X)))
+       XMXQi (inverse XMXQ)
+       MX' (mmul M (transpose X))
+       XM (mmul X M)
+       Xm (mmul X m)
+       mean-function (fn [F] (+ m (mmul MX' XMXQi (- F Xm))))
+       cov-matrix (- M (mmul MX' XMXQi XM))]
+   [mean-function cov-matrix]))
+
+(defn backward-sample
+ [F distribution]
+ (let [[mean-function cov-matrix] distribution]
+   (+ (mean-function F) (sample-safe-mvn cov-matrix))))
+
+(defn FFBC
+ "Forward Filtering Backward Compose Algorithm"
+ [times obs obs-var gp-var gp-time-scale]
+ (let [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
+       (AR-params times obs obs-var gp-var gp-time-scale)
+       FF (reductions forward-filter
+                      [minit Minit 0 mar-obs-var-1 HP]
+                      (map vector (rest obs) (repeat obs-var) Xs Qs))
+       BCn [(first (last FF)) (second (last FF))]
+       BC (map backward-compose (map first FF) (map second FF) Xs Qs)]
+   [BC BCn]))
 
 (defn FFBS
- "Forward Filtering Backward Sampling Algorithm"
+ "Forward Filtering Backward Compose Algorithm"
  [times obs obs-var gp-var gp-time-scale]
- (let [[delays Qs Xs P mar-obs-var-1 minit Minit]
-       (AR-params times obs obs-var gp-var gp-time-scale)
-       forward-filter (fn [mM params]
-                        (let [[m M] mM
-                              [m+1 M+1 _] (ff-params m M params obs-var)]
-                          [m+1 M+1]))
-
-       backward-sample (fn [F params]
-                         (let [[[m M] X Q] params
-                               XMXQ (+ Q (mmul X M (transpose X)))
-                               XMXQi (inverse XMXQ)
-                               MX' (mmul M (transpose X))
-                               XM (mmul X M)
-                               Xm (mmul X m)
-                               mean-vector (+ m (mmul MX' XMXQi (- F Xm)))
-                               cov-matrix (- M (mmul MX' XMXQi XM))]
-                           (+ mean-vector (sample-safe-mvn cov-matrix))))
-
-       mMs (reductions forward-filter
-                       [minit Minit]
-                       (map vector (rest obs) Xs Qs))
-       Fn (+ (first (last mMs)) (sample-safe-mvn (second (last mMs))))
-       Fs (reverse (reductions backward-sample
-                               Fn (reverse (map vector (butlast mMs) Xs Qs))))]
+ (let [[BC BCn] (FFBC times obs obs-var gp-var gp-time-scale)
+       Fn (+ (first BCn) (sample-safe-mvn (second BCn)))
+       Fs (reverse (reductions backward-sample Fn (reverse BC)))]
    (zipmap times Fs)))
 
+(defn logpdf-normal
+ [y mu s2]
+ (let [exponent (* 0.5 (/ (square (- y mu)) s2))
+       normalizer (* 0.5 (log (* 2 Math/PI s2)))]
+   (negate (+ exponent normalizer))))
 
 (defn log-likelihood
  "Evaluates the log likelihood"
  [times obs obs-var gp-var gp-time-scale]
- (let [[delays Qs Xs P mar-obs-var-1 minit Minit]
+ (let [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
        (AR-params times obs obs-var gp-var gp-time-scale)
-       sinit (negate (+ (* 0.5 (log (* Math/PI 2 mar-obs-var-1)))
-                        (* (/ 0.5 mar-obs-var-1) (square (first obs)))))
-       forward-filter
-        (fn [smM params]
-         (let [[s m M] smM
-               [m+1 M+1 residual mar-obs-var] (ff-params m M params obs-var)
-               exponent (* (/ 0.5 mar-obs-var) (square residual))
-               logdensity (negate (+ (* 0.5 (log (* mar-obs-var Math/PI 2)))
-                                     exponent))
-               s+1 (+ s logdensity)]
-           [s+1 m+1 M+1]))]
-   (first (reduce forward-filter
-                   [sinit minit Minit]
-                   (map vector (rest obs) Xs Qs)))))
+       FF (reductions forward-filter
+                      [minit Minit 0 mar-obs-var-1 HP]
+                      (map vector (rest obs) (repeat obs-var) Xs Qs))
+       mar-means (map (fn [x] (nth x 2)) FF)
+       mar-vars (map (fn [x] (nth x 3)) FF)]
+   (reduce + (map (fn [x] (let [[y mu s2] x] (logpdf-normal y mu s2)))
+                  (map vector obs mar-means mar-vars)))))
 
 
 (defn sample-slice
@@ -200,7 +205,7 @@
 (defn sample-gp-mean
  [times obs obs-var gp-var gp-time-scale]
  (let
-  [[delays Qs Xs P mar-obs-var-1 minit Minit]
+  [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
    (AR-params times obs obs-var gp-var gp-time-scale)
    Cinit (* (slice P 1 0) (/ (first obs) mar-obs-var-1))
    Dinit (negate (/ (slice P 1 0) mar-obs-var-1))
@@ -209,7 +214,7 @@
      (let
       [[pm prec C D m M] acc
        [y X Q] params
-       [m+1 M+1 _ mar-obs-var XMXQH] (ff-params m M params obs-var)
+       [m+1 M+1 _ mar-obs-var XMXQH] (forward-filter [m M 0 0 0] [y obs-var X Q])
        XD (mmul X D)
        HXD (mget XD 0)
        HXD+1 (inc HXD)
@@ -235,23 +240,36 @@
 
 
 (defn first-f [f x] (first (f x)))
-(def grid (range 1 10 0.6))
-(def gp (sample-gp {} 1 1))
+(def times (range 1 10 4))
+(def gp-var 1.1)
+(def gp-time-scale 1.2)
+(def gp (sample-gp {} gp-var gp-time-scale))
 (def F (partial first-f gp))
-(def obs-var 0.3)
-(def y (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) grid))
+(def obs-var 0.0003)
+(def obs (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) times))
+(def ARparams (AR-params times obs obs-var gp-var gp-time-scale))
+(def delays (first ARparams))
+(def Qs (second ARparams))
+(def Xs (nth ARparams 2))
+(def P (nth ARparams 3))
+(def HP (nth ARparams 4))
+(def mar-obs-var-1 (nth ARparams 5))
+(def minit (nth ARparams 6))
+(def Minit (nth ARparams 7))
+ARparams [[delays Qs Xs P HP mar-obs-var-1 minit Minit]]
+
 (/ (log-likelihood grid y obs-var 1.4 4.4)
    (log-likelihood grid y obs-var 10 10))
 (/ (trusted-log-likelihood grid y obs-var 1.4 4.4)
    (trusted-log-likelihood grid y obs-var 10 10))
 (log (pdf-normal (first y) :mean 0 :sd (sqrt (+ obs-var 10))))
-(def pivots (FFBS grid y obs-var 1 1))
-(def F1 (partial first-f (sample-gp pivots 1 1)))
-(def F2 (partial first-f (sample-gp pivots 1 1)))
-(def F3 (partial first-f (sample-gp pivots 1 1)))
-(def F4 (partial first-f (sample-gp pivots 1 1)))
-(def F5 (partial first-f (sample-gp pivots 1 1)))
-(doto (ip/scatter-plot grid y)
+(def pivots (FFBS times obs obs-var gp-var gp-time-scale))
+(def F1 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
+(def F2 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
+(def F3 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
+(def F4 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
+(def F5 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
+(doto (ip/scatter-plot times obs)
   (ip/add-function F1 0 10)
   (ip/add-function F2 0 10)
   (ip/add-function F3 0 10)
@@ -272,7 +290,7 @@
 (def grid (range 1 30 1))
 (def gp (sample-gp {} 1 1))
 (def F (partial first-f gp))
-(def obs-var 1.0)
+(def obs-var 0.5)
 (def y (map (fn [x] (+ (F x) -100  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) grid))
-(sample-gp-mean grid y obs-var 1 1)
-(trusted-mean-conditional grid y obs-var 1 1)
+(sample-gp-mean grid y obs-var 0.4 1.3)
+(trusted-mean-conditional grid y obs-var 0.4 1.3)
