@@ -2,12 +2,7 @@
   (:require [clojure.test :refer :all]
             [ipp4clj.core :refer :all]))
 
-(deftest a-test
-  (testing "FIXME, I fail."
-    (is (= 0 1))))
 
-(deftest single-observation
- "Compare logdensity evaluation with univariate normal")
 
 (defn stationary-covariance
  [gp-variance gp-length-scale]
@@ -18,15 +13,6 @@
        XPXQ (+ (mmul X P (transpose X)) Q)]
    (mget XPXQ 0 0)))
 
-(defn two-observations
- [times gp-variance gp-length-scale]
- "Covariance between second and first observation should be XQ
-  compare this with what is being created from matern-cov-matrix"
- (let [delay (- (second times) (first times))
-       X (regression gp-length-scale delay)
-       P (statcov gp-variance gp-length-scale)
-       K (matern-cov-matrix times gp-variance gp-length-scale)]
-   [(mget K 0 1)  (mget (mmul X P) 0 0)]))
 
 (defn matern-cov-matrix
   [times gp-variance gp-length-scale]
@@ -62,6 +48,64 @@
        prec (dot ones (la/solve cov-matrix ones))
        precxmean (dot ones (la/solve cov-matrix observations))]
    [(/ precxmean prec) (/ 1 prec)]))
+
+
+
+(deftest stationary-covariance
+  (testing "P[0,0] should be gp-variance"
+    (let [gp-var 0.5
+          gp-time-scale 1.5
+          P (statcov gp-var gp-time-scale)
+          P00 (mget P 0 0)
+          difference (- gp-var P00)
+          eps 0.000001]
+      (is (< (abs difference) eps)))))
+
+(deftest two-observations-covariance
+  (testing "Covariance between second and first observation, XP[0,0], from the
+   state space construction should match K[0,1] from direct Matern construction"
+    (let [times [1.23 1.56]
+          gp-var 0.8
+          gp-time-scale 1.4
+          delay (- (second times) (first times))
+          X (regression gp-time-scale delay)
+          P (statcov gp-var gp-time-scale)
+          K (matern-cov-matrix times gp-var gp-time-scale)
+          K01 (mget K 0 1)
+          XP00 (mget (mmul X P) 0 0)
+          difference (- K01 XP00)
+          eps 0.000001]
+      (is (< (abs difference) eps)))))
+
+(deftest single-observation-loglikelihood
+  (testing "log-likelihood evaluation for single observation should match
+            direct comparison with univariate normal(0, obs-var+gp-var)"
+    (let [obs [0.3]
+          times [0.6]
+          obs-var 1.5
+          gp-var 0.2
+          gp-time-scale 0.1
+          loglikAR (log-likelihood times obs obs-var gp-var gp-time-scale)
+          loglik (log (pdf-normal (first obs)
+                                  :mean 0
+                                  :sd (sqrt (+ obs-var gp-var))))
+          difference (- loglikAR loglik)
+          eps 0.000001]
+      (is (< (abs difference) eps)))))
+
+(deftest multi-observation-loglikelihood
+  (testing "log-likelihood from state-space against direct construction"
+    (let [times (sort (sample-uniform 10))
+          obs (sample-uniform 10)
+          obs-var (rand)
+          gp-var (rand)
+          gp-t-scale (rand)
+          loglikAR (log-likelihood times obs obs-var gp-var gp-t-scale)
+          loglik (trusted-log-likelihood times obs obs-var gp-var gp-t-scale)
+          difference (- loglikAR loglik)
+          eps 0.000001]
+      (is (< (abs difference) eps)))))
+
 ; (defn sample-gp
 ;  "Gaussian Process Function"
 ;  [gp-variance covariance-kernel]
