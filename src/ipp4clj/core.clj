@@ -10,6 +10,20 @@
 (require '[clojure.math.combinatorics :as combo])
 
 (defn probit [x] (cdf-normal x))
+(defn logpdf-mvnormal
+ [observations mean-vector cov-matrix]
+ (let [n (ic/length observations)
+       residual (- observations mean-vector)
+       exponent (* 0.5 (dot residual (la/solve cov-matrix residual)))
+       normalizer (+ (* 0.5 (log (det cov-matrix)))
+                     (* n 0.5 (log (* 2 Math/PI))))]
+   (negate (+ normalizer exponent))))
+
+(defn logpdf-normal
+ [y mu s2]
+ (let [exponent (* 0.5 (/ (square (- y mu)) s2))
+       normalizer (* 0.5 (log (* 2 Math/PI s2)))]
+   (negate (+ exponent normalizer))))
 
 (defn sample-ppp
  "Generates a realization from a 1 dimensional Poisson point process with given
@@ -163,11 +177,28 @@
        Fs (reverse (reductions backward-sample Fn (reverse BC)))]
    (zipmap times Fs)))
 
-(defn logpdf-normal
- [y mu s2]
- (let [exponent (* 0.5 (/ (square (- y mu)) s2))
-       normalizer (* 0.5 (log (* 2 Math/PI s2)))]
-   (negate (+ exponent normalizer))))
+(defn logpdf-ARF
+ [F times obs obs-var gp-var gp-time-scale]
+ (let [[BC BCn] (FFBC times obs obs-var gp-var gp-time-scale)
+       Fs (map F times)
+       Fn (last Fs)
+       mean-functions (map first BC)
+       means (map (fn [f x] (f x)) mean-functions (rest Fs))
+       covars (map second BC)]
+   (+ (reduce + (map logpdf-mvnormal (drop-last Fs) means covars))
+      (logpdf-mvnormal Fn (first BCn) (second BCn)))))
+
+(defn logpdf-F
+ [F times obs obs-var gp-var gp-time-scale]
+ (let [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
+       (AR-params times obs obs-var gp-var gp-time-scale)
+       Fs (map F times)
+       means (cons [0 0 0] (map (fn [X F] (mmul X F)) Xs (drop-last Fs)))
+       covars (cons P Qs)
+       logdensity-f (reduce + (map logpdf-mvnormal Fs means covars))
+       logdensity-y (reduce + (map logpdf-normal obs (map first Fs) (repeat obs-var)))]
+   (+ logdensity-y logdensity-f)))
+
 
 (defn log-likelihood
  "Evaluates the log likelihood"
@@ -240,12 +271,14 @@
 
 
 (defn first-f [f x] (first (f x)))
-(def times (range 1 10 4))
-(def gp-var 1.1)
-(def gp-time-scale 1.2)
+(def times (range 1 10 1))
+(def gp-var 1.23)
+(def gp-time-scale 0.21)
 (def gp (sample-gp {} gp-var gp-time-scale))
+(def F1 (sample-gp {} gp-var gp-time-scale))
+(def F2 (sample-gp {} gp-var gp-time-scale))
 (def F (partial first-f gp))
-(def obs-var 0.0003)
+(def obs-var 0.45)
 (def obs (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) times))
 (def ARparams (AR-params times obs obs-var gp-var gp-time-scale))
 (def delays (first ARparams))
@@ -258,10 +291,13 @@
 (def Minit (nth ARparams 7))
 ARparams [[delays Qs Xs P HP mar-obs-var-1 minit Minit]]
 
-(/ (log-likelihood grid y obs-var 1.4 4.4)
-   (log-likelihood grid y obs-var 10 10))
-(/ (trusted-log-likelihood grid y obs-var 1.4 4.4)
-   (trusted-log-likelihood grid y obs-var 10 10))
+(- (logpdf-F F1 times obs obs-var gp-var gp-time-scale)
+   (logpdf-F F2 times obs obs-var gp-var gp-time-scale))
+(- (logpdf-ARF F1 times obs obs-var gp-var gp-time-scale)
+   (logpdf-ARF F2 times obs obs-var gp-var gp-time-scale))
+
+(log-likelihood times obs obs-var gp-var gp-time-scale)
+(trusted-log-likelihood times obs obs-var gp-var gp-time-scale)
 (log (pdf-normal (first y) :mean 0 :sd (sqrt (+ obs-var 10))))
 (def pivots (FFBS times obs obs-var gp-var gp-time-scale))
 (def F1 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
