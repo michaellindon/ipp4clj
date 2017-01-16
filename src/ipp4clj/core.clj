@@ -266,19 +266,42 @@
   [(/ precxmean precision) (/ 1.0 precision)]))
 
 
+(defn sample-truncated-normal [mu s2 a b]
+ (let [sd (sqrt s2)
+       normalizer (- (cdf-normal b :mean mu :sd sd) (cdf-normal a :mean mu :sd sd))
+       uniform (sample-beta 1)]
+  (quantile-normal (+ (* uniform normalizer) (cdf-normal a :mean mu :sd sd))
+                   :mean mu :sd sd)))
+
+(defn sample-left-normal [mu s2]
+ (let [sd (sqrt s2)
+       normalizer (cdf-normal 0 :mean mu :sd sd)
+       uniform (sample-beta 1)]
+  (quantile-normal (* uniform normalizer)
+                   :mean mu :sd sd)))
+
+(defn sample-right-normal [mu s2]
+ (let [sd (sqrt s2)
+       normalizer (- 1 (cdf-normal 0 :mean mu :sd sd))
+       uniform (sample-beta 1)]
+  (quantile-normal (+ (* uniform normalizer) (cdf-normal 0 :mean mu :sd sd))
+                   :mean mu :sd sd)))
+
+(ic/view (ip/histogram (take 10000 (repeatedly (fn [] (sample-left-normal -1 1)))) :nbins 100))
 
 
 
 
 (defn first-f [f x] (first (f x)))
-(def times (range 1 10 1))
-(def gp-var 1.23)
-(def gp-time-scale 0.21)
+(def times (range 1 10 3))
+(def gp-var 1)
+(def gp-time-scale 1)
 (def gp (sample-gp {} gp-var gp-time-scale))
 (def F1 (sample-gp {} gp-var gp-time-scale))
 (def F2 (sample-gp {} gp-var gp-time-scale))
 (def F (partial first-f gp))
-(def obs-var 0.45)
+(def F (comp first gp))
+(def obs-var 0.001)
 (def obs (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) times))
 (def ARparams (AR-params times obs obs-var gp-var gp-time-scale))
 (def delays (first ARparams))
@@ -300,11 +323,11 @@ ARparams [[delays Qs Xs P HP mar-obs-var-1 minit Minit]]
 (trusted-log-likelihood times obs obs-var gp-var gp-time-scale)
 (log (pdf-normal (first y) :mean 0 :sd (sqrt (+ obs-var 10))))
 (def pivots (FFBS times obs obs-var gp-var gp-time-scale))
-(def F1 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
-(def F2 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
-(def F3 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
-(def F4 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
-(def F5 (partial first-f (sample-gp pivots gp-var gp-time-scale)))
+(def F1 (comp first (sample-gp pivots gp-var gp-time-scale)))
+(def F2 (comp first (sample-gp pivots gp-var gp-time-scale)))
+(def F3 (comp first (sample-gp pivots gp-var gp-time-scale)))
+(def F4 (comp first (sample-gp pivots gp-var gp-time-scale)))
+(def F5 (comp first (sample-gp pivots gp-var gp-time-scale)))
 (doto (ip/scatter-plot times obs)
   (ip/add-function F1 0 10)
   (ip/add-function F2 0 10)
@@ -314,10 +337,21 @@ ARparams [[delays Qs Xs P HP mar-obs-var-1 minit Minit]]
   ic/view)
 
 
+(def intensity (comp (partial * max-intensity) probit F))
+
+(defn integrate [f a b]
+  (let [points (range a b (/ 10000))]
+    (/ (reduce + (map f points)) 10000)))
+(riemann-lower-sum F 0 1 10)
+(riemann-lower-sum F 0 1 100)
+(riemann-lower-sum F 0 1 1000)
+(riemann-lower-sum F 0 1 10000)
 
 
-
-
+(ic/view (ip/function-plot intensity 3 4))
+(ic/view (ip/function-plot F 3 4))
+(def max-intensity 100)
+(def intensity (comp (partial * max-intensity) probit F))
 (var (take 10000 (iterate (partial sample-slice (comp log pdf-exp) 1) 0)))
 (ic/view (ip/histogram (take 10000 (iterate (partial sample-slice (comp log (fn [x] (pdf-normal x :mean 10 :sd 3))) 0.2) 0.5)) :nbins 100))
 (ic/view (ip/histogram (sample-normal 10000 :mean 10 :sd 3) :nbins 100))
@@ -325,7 +359,7 @@ ARparams [[delays Qs Xs P HP mar-obs-var-1 minit Minit]]
 
 (def grid (range 1 30 1))
 (def gp (sample-gp {} 1 1))
-(def F (partial first-f gp))
+(def F (comp first gp))
 (def obs-var 0.5)
 (def y (map (fn [x] (+ (F x) -100  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) grid))
 (sample-gp-mean grid y obs-var 0.4 1.3)
