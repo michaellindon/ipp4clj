@@ -33,7 +33,7 @@
        I (identity-matrix p)
        K (matern-cov-matrix times gp-variance gp-length-scale)
        cov-matrix (+ (* observation-variance I) K)
-       exponent (* 0.5 (dot observations (la/solve cov-matrix observations)))
+       exponent (* 0.5 (dot observations (mmul ( inverse cov-matrix) observations)))
        normalizer (+ (* 0.5 (log (det cov-matrix)))
                      (* p 0.5 (log (* 2 Math/PI))))]
    (negate (+ normalizer exponent))))
@@ -45,8 +45,8 @@
        K (matern-cov-matrix times gp-variance gp-length-scale)
        cov-matrix (+ (* observation-variance I) K)
        ones (fill (new-vector p) 1.0)
-       prec (dot ones (la/solve cov-matrix ones))
-       precxmean (dot ones (la/solve cov-matrix observations))]
+       prec (dot ones (mmul (inverse cov-matrix) ones))
+       precxmean (dot ones (mmul (inverse cov-matrix) observations))]
    [(/ precxmean prec) (/ 1 prec)]))
 
 

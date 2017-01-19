@@ -27,13 +27,18 @@
                     :start-t 0
                     :end-t 1})
 
+(defn ulogpdf-gamma [a b x]
+ (if (neg? x)
+     Double/NEGATIVE_INFINITY
+     (- (* (dec a) (log x)) (* b x))))
+
 (defn update-gp-time-scale [state]
  (let [{y :y
         gp-var :gp-var
         gp-time-scale :gp-time-scale} state
         times (keys y)
         obs (vals y)
-        conditional (fn [x] (log-likelihood times obs 1 gp-var x))]
+        conditional (fn [x] (+ (ulogpdf-gamma 2 1 x) (log-likelihood times obs 1 gp-var x)))]
    (assoc state :gp-time-scale (sample-slice conditional 1 gp-time-scale))))
 
 (defn update-gp-var [state]
@@ -42,12 +47,9 @@
         gp-time-scale :gp-time-scale} state
         times (keys y)
         obs (vals y)
-        conditional (fn [x] (log-likelihood times obs 1 x gp-time-scale))]
+        conditional (fn [x] (+ (ulogpdf-gamma 2 1 x) (log-likelihood times obs 1 x gp-time-scale)))]
    (assoc state :gp-var (sample-slice conditional 1 gp-var))))
 
-(defn log-likelihood
- "Evaluates the log likelihood"
- [times obs obs-var gp-var gp-time-scale])
 
 (defn update-gp-mean [state]
  (let [{y :y
@@ -102,7 +104,7 @@
                       update-gp-var
                       update-gp-time-scale))
 
-(def mcmc (iterate transition initial-state))
+(def mcmc (iterate transition initial-state)
 (defn mean-function [x] (mean (map (fn [y] (first ((:F y) x))) (take 200 mcmc))))
 (defn lower-function [x] (quantile (map (fn [y] (first ((:F y) x))) (take 200 mcmc)) :probs 0.025))
 (defn upper-function [x] (quantile (map (fn [y] (first ((:F y) x))) (take 200 mcmc)) :probs 0.975))
@@ -112,7 +114,9 @@
 (ic/view (ip/function-plot mean-function 0 1))
 (def learned (:y (transition (transition (transition initial-state)))))
 
-(ic/view (ip/histogram (map :gp-mean (take 200 mcmc)) :nbins 100))
+(ic/view (ip/histogram (map :gp-mean (take 1000 mcmc)) :nbins 100))
+(ic/view (ip/histogram (map :gp-var (take 1000 mcmc)) :nbins 100))
+(ic/view (ip/histogram (map :gp-time-scale (take 1000 mcmc)) :nbins 100))
 (ic/view (ip/time-series-plot (range 0 200 1) (map :gp-mean (take 200 mcmc))))
 
 (def ribbon (ip/function-plot mean-function 0 1))
@@ -127,14 +131,14 @@
 
 
 (def mcmc (iterate transition initial-state))
-(defn mean-function [x] (mean (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (take 200 mcmc))))
-(defn lower-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (take 200 mcmc)) :probs 0.025))
-(defn upper-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (take 200 mcmc)) :probs 0.975))
-(def ribbon (ip/function-plot mean-function 0 2))
+(defn mean-function [x] (mean (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (take 1000 mcmc))))
+(defn lower-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (take 1000 mcmc)) :probs 0.025))
+(defn upper-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (take 1000 mcmc)) :probs 0.975))
+(def ribbon (ip/function-plot mean-function 0 1))
 (.setSeriesPaint (.getRenderer (.getPlot ribbon) 0) 0 java.awt.Color/red)
-(ip/add-function ribbon upper-function 0 2 :series-label 1)
+(ip/add-function ribbon upper-function 0 1 :series-label 1)
 (.setSeriesPaint (.getRenderer (.getPlot ribbon) 1) 0 java.awt.Color/pink)
-(ip/add-function ribbon lower-function 0 2 :series-label 2)
+(ip/add-function ribbon lower-function 0 1 :series-label 2)
 (.setSeriesPaint (.getRenderer (.getPlot ribbon) 2) 0 java.awt.Color/pink)
 (ip/add-function ribbon (fn [x] (+ gp-mean (f x))) 0 1 :series-label 3)
 (.setSeriesPaint (.getRenderer (.getPlot ribbon) 3) 0 java.awt.Color/black)
