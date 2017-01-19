@@ -200,18 +200,21 @@
    (+ logdensity-y logdensity-f)))
 
 
+
 (defn log-likelihood
  "Evaluates the log likelihood"
  [times obs obs-var gp-var gp-time-scale]
- (let [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
-       (AR-params times obs obs-var gp-var gp-time-scale)
-       FF (reductions forward-filter
-                      [minit Minit 0 mar-obs-var-1 HP]
-                      (map vector (rest obs) (repeat obs-var) Xs Qs))
-       mar-means (map (fn [x] (nth x 2)) FF)
-       mar-vars (map (fn [x] (nth x 3)) FF)]
-   (reduce + (map (fn [x] (let [[y mu s2] x] (logpdf-normal y mu s2)))
-                  (map vector obs mar-means mar-vars)))))
+ (if (or (neg? gp-var) (neg? gp-time-scale) (neg? obs-var))
+     (Double/NEGATIVE_INFINITY)
+     (let [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
+           (AR-params times obs obs-var gp-var gp-time-scale)
+           FF (reductions forward-filter
+                          [minit Minit 0 mar-obs-var-1 HP]
+                          (map vector (rest obs) (repeat obs-var) Xs Qs))
+           mar-means (map (fn [x] (nth x 2)) FF)
+           mar-vars (map (fn [x] (nth x 3)) FF)]
+       (reduce + (map (fn [x] (let [[y mu s2] x] (logpdf-normal y mu s2)))
+                      (map vector obs mar-means mar-vars))))))
 
 
 (defn sample-slice
@@ -292,14 +295,12 @@
 
 
 
-(defn first-f [f x] (first (f x)))
 (def times (range 1 10 3))
 (def gp-var 1)
 (def gp-time-scale 1)
 (def gp (sample-gp {} gp-var gp-time-scale))
 (def F1 (sample-gp {} gp-var gp-time-scale))
 (def F2 (sample-gp {} gp-var gp-time-scale))
-(def F (partial first-f gp))
 (def F (comp first gp))
 (def obs-var 0.001)
 (def obs (map (fn [x] (+ (F x)  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) times))
