@@ -67,7 +67,7 @@
       gp-var (gen/double* {:infinite? false :NaN? false :min 0.01 :max 100})
       gp-time-scale (gen/double* {:infinite? false :NaN? false :min 0.0001 :max 100})]
    (let [[m1 v1] (trusted-mean-conditional times obs obs-var gp-var gp-time-scale)
-         [m2 v2] (sample-gp-mean times obs obs-var gp-var gp-time-scale)
+         [m2 v2] (mean-conditional times obs obs-var gp-var gp-time-scale)
          difference1 (- m1 m2)
          difference2 (- v1 v2)
          difference (max difference1 difference2)

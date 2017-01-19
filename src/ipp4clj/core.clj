@@ -191,7 +191,7 @@
 
 
 
-(defn sample-gp-mean
+(defn mean-conditional
  [times obs obs-var gp-var gp-time-scale]
  (let
   [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
@@ -297,7 +297,7 @@ ARparams [[delays Qs Xs P HP mar-obs-var-1 minit Minit]]
 (def F (comp first gp))
 (def obs-var 0.5)
 (def y (map (fn [x] (+ (F x) -100  (sample-normal 1 :mean 0 :sd (sqrt obs-var)))) grid))
-(sample-gp-mean grid y obs-var 0.4 1.3)
+(mean-conditional grid y obs-var 0.4 1.3)
 (trusted-mean-conditional grid y obs-var 0.4 1.3)
 
 

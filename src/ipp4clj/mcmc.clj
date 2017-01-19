@@ -57,7 +57,7 @@
         gp-time-scale :gp-time-scale} state
         times (keys y)
         obs (vals y)
-        mus2 (sample-gp-mean times obs 1 gp-var gp-time-scale)
+        mus2 (mean-conditional times obs 1 gp-var gp-time-scale)
         new-mean (sample-normal 1 :mean (first mus2) :sd (sqrt (second mus2)))]
    (assoc state :gp-mean new-mean)))
 
