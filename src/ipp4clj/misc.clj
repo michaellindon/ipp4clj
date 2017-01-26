@@ -3,17 +3,15 @@
             [clojure.core.matrix :refer :all]
             [incanter.core :as ic]
             [incanter.charts :as ip]
-            [clojure.data.avl :as avl]
             [clojure.core.matrix.linear :as la]
-            [clojure.math.combinatorics :as combo]
-            [clojure.core.matrix.operators :refer :all]))
+            [clojure.data.avl :as avl]))
 
 (defn probit [x] (cdf-normal x))
 
 (defn logpdf-mvnormal
  [observations mean-vector cov-matrix]
  (let [n (ic/length observations)
-       residual (- observations mean-vector)
+       residual (sub observations mean-vector)
        exponent (* 0.5 (dot residual (mmul (inverse cov-matrix) residual)))
        normalizer (+ (* 0.5 (log (det cov-matrix)))
                      (* n 0.5 (log (* 2 Math/PI))))]

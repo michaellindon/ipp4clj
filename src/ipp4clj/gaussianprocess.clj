@@ -1,8 +1,7 @@
 (ns ipp4clj.gaussianprocess
   (:require [incanter.core :as ic]
             [clojure.core.matrix :refer :all]
-            [clojure.math.combinatorics :as combo]
-            [clojure.core.matrix.operators :refer :all]))
+            [clojure.math.combinatorics :as combo]))
 
 (defn matern-cov-matrix
   [times gp-variance gp-length-scale]
@@ -13,7 +12,7 @@
                                          dl (* d l)]
                                      (* (+ 1 dl (/ (square dl) 3))
                                         (exp (negate dl)))))
-        covs (* gp-variance (map matern-correlation delays))]
+        covs (mul gp-variance (map matern-correlation delays))]
     (reshape covs [p p])))
 
 (defn trusted-log-likelihood
@@ -22,7 +21,7 @@
  (let [p (ic/length times)
        I (identity-matrix p)
        K (matern-cov-matrix times gp-variance gp-length-scale)
-       cov-matrix (+ (* observation-variance I) K)
+       cov-matrix (add (mul observation-variance I) K)
        exponent (* 0.5 (dot observations (mmul ( inverse cov-matrix) observations)))
        normalizer (+ (* 0.5 (log (det cov-matrix)))
                      (* p 0.5 (log (* 2 Math/PI))))]
@@ -33,7 +32,7 @@
  (let [p (ic/length times)
        I (identity-matrix p)
        K (matern-cov-matrix times gp-variance gp-length-scale)
-       cov-matrix (+ (* observation-variance I) K)
+       cov-matrix (add (mul observation-variance I) K)
        ones (fill (new-vector p) 1.0)
        prec (dot ones (mmul (inverse cov-matrix) ones))
        precxmean (dot ones (mmul (inverse cov-matrix) observations))]

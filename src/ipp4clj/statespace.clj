@@ -3,10 +3,7 @@
             [incanter.stats :refer :all]
             [clojure.core.matrix :refer :all]
             [incanter.core :as ic]
-            [clojure.data.avl :as avl]
-            [clojure.core.matrix.linear :as la]
-            [clojure.math.combinatorics :as combo]
-            [clojure.core.matrix.operators]))
+            [clojure.data.avl :as avl]))
 
 (defn Q
  "Returns unscaled Covariance matrix for length scale ls and delay d"
@@ -102,7 +99,7 @@
  [F regression innovation delay]
  (let [X (regression delay)
        q (sample-safe-mvn (innovation delay))]
-  (+ (mmul X F) q)))
+  (add (mmul X F) q)))
 
 (defn sample-sandwich
  "Sample F[i] | F[i-1],F[i+1] where F[j] is F(t(j))"
@@ -117,9 +114,9 @@
        XvFv (mmul Xv Fv)
        XnvFv (mmul Xnv Fv)
        QvXn' (mmul Qv (transpose Xn))
-       mean-vector (+ XvFv (mmul QvXn' Qnvi (- Fn XnvFv)))
-       cov-matrix (- Qv (mmul QvXn' Qnvi (transpose QvXn')))]
-   (+ mean-vector (sample-safe-mvn cov-matrix))))
+       mean-vector (add XvFv (mmul QvXn' Qnvi (sub Fn XnvFv)))
+       cov-matrix (sub Qv (mmul QvXn' Qnvi (transpose QvXn')))]
+   (add mean-vector (sample-safe-mvn cov-matrix))))
 
 (defn sample-gp
  "Gaussian Process Function"
@@ -161,9 +158,9 @@
         Xs (map (partial regression gp-time-scale) delays)
         P (statcov gp-var gp-time-scale)
         mar-obs-var-1 (+ obs-var (mget P 0 0))
-        minit (/ (* (slice P 1 0) (first obs)) mar-obs-var-1)
+        minit (div (mul (slice P 1 0) (first obs)) mar-obs-var-1)
         HP (slice P 0 0)
-        Minit (- P (/ (outer-product HP HP) mar-obs-var-1))]
+        Minit (sub P (div (outer-product HP HP) mar-obs-var-1))]
     [delays Qs Xs P HP mar-obs-var-1 minit Minit]))
 
 (defn forward-filter
@@ -172,30 +169,30 @@
        [y obs-var X Q] params
        Xm (mmul X m)
        mar-obs-mean (mget Xm 0)
-       XMXQ (+ Q (mmul X M (transpose X)))
+       XMXQ (add Q (mmul X M (transpose X)))
        XMXQH (slice XMXQ 0 0)
        HXMXQH (mget XMXQ 0 0)
        mar-obs-var (+ obs-var HXMXQH)
        residual (- y mar-obs-mean)
-       m-out (+ Xm (/ (mmul XMXQH residual) mar-obs-var))
-       M-out (- XMXQ (/ (outer-product XMXQH XMXQH) mar-obs-var))]
+       m-out (add Xm (div (mmul XMXQH residual) mar-obs-var))
+       M-out (sub XMXQ (div (outer-product XMXQH XMXQH) mar-obs-var))]
    [m-out M-out mar-obs-mean mar-obs-var XMXQH]))
 
 (defn backward-compose
  [m M X Q]
- (let [XMXQ (+ Q (mmul X M (transpose X)))
+ (let [XMXQ (add Q (mmul X M (transpose X)))
        XMXQi (inverse XMXQ)
        MX' (mmul M (transpose X))
        XM (mmul X M)
        Xm (mmul X m)
-       mean-function (fn [F] (+ m (mmul MX' XMXQi (- F Xm))))
-       cov-matrix (- M (mmul MX' XMXQi XM))]
+       mean-function (fn [F] (add m (mmul MX' XMXQi (sub F Xm))))
+       cov-matrix (sub M (mmul MX' XMXQi XM))]
    [mean-function cov-matrix]))
 
 (defn backward-sample
  [F distribution]
  (let [[mean-function cov-matrix] distribution]
-   (+ (mean-function F) (sample-safe-mvn cov-matrix))))
+   (add (mean-function F) (sample-safe-mvn cov-matrix))))
 
 (defn FFBC
  "Forward Filtering Backward Compose Algorithm"
@@ -213,7 +210,7 @@
  "Forward Filtering Backward Compose Algorithm"
  [times obs obs-var gp-var gp-time-scale]
  (let [[BC BCn] (FFBC times obs obs-var gp-var gp-time-scale)
-       Fn (+ (first BCn) (sample-safe-mvn (second BCn)))
+       Fn (add (first BCn) (sample-safe-mvn (second BCn)))
        Fs (reverse (reductions backward-sample Fn (reverse BC)))]
    (zipmap times Fs)))
 
@@ -259,8 +256,8 @@
  (let
   [[delays Qs Xs P HP mar-obs-var-1 minit Minit]
    (AR-params times obs obs-var gp-var gp-time-scale)
-   Cinit (* (slice P 1 0) (/ (first obs) mar-obs-var-1))
-   Dinit (negate (/ (slice P 1 0) mar-obs-var-1))
+   Cinit (mul (slice P 1 0) (/ (first obs) mar-obs-var-1))
+   Dinit (negate (div (slice P 1 0) mar-obs-var-1))
    forward-filter
     (fn [acc params]
      (let
@@ -273,10 +270,10 @@
        XC (mmul X C)
        HXC (mget XC 0)
        prec+1 (+ prec (/ (square HXD+1) mar-obs-var))
-       pm+1 (+ pm (/ (* (- y HXC) HXD+1) mar-obs-var))
-       F (/ XMXQH mar-obs-var)
-       C+1 (+ XC (negate (* F HXC)) (* F y))
-       D+1 (- XD F (* F HXD))]
+       pm+1 (+ pm (/ (* (sub y HXC) HXD+1) mar-obs-var))
+       F (div XMXQH mar-obs-var)
+       C+1 (add XC (negate (mmul F HXC)) (mmul F y))
+       D+1 (sub XD F (mmul F HXD))]
       [pm+1 prec+1 C+1 D+1 m+1 M+1]))
 
    ffs (reduce forward-filter
