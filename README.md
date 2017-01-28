@@ -1,10 +1,18 @@
 # ipp4clj
 
-A Clojure library designed to ... well, that part is up to you.
+
+
+.__                 _____         .__       __ 
+|__|_____ ______   /  |  |   ____ |  |     |__|
+|  \____ \\____ \ /   |  |__/ ___\|  |     |  |
+|  |  |_> >  |_> >    ^   /\  \___|  |__   |  |
+|__|   __/|   __/\____   |  \___  >____/\__|  |
+   |__|   |__|        |__|      \/     \______|
+
 
 ## Usage
 
-FIXME
+Coming Shortly...
 
 ## License
 
