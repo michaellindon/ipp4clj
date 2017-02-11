@@ -11,4 +11,5 @@
                  [net.mikera/vectorz-clj "0.45.0"]
                  [org.clojure/data.avl "0.0.17"]
                  [org.clojure/test.check "0.9.0"]
-                 [org.clojure/math.combinatorics "0.1.3"]])
+                 [org.clojure/math.combinatorics "0.1.3"]]
+  :repl-options {:port 1111})
