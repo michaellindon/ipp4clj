@@ -17,20 +17,35 @@
   (let [F (sample-gp {} gp-var gp-time-scale)
         f (comp first F)
         intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)
-        thin-intensity (fn [x] (- max-intensity (intensity x)))
-        obs-times (sample-ppp intensity max-intensity 0 1)
-        aug-times (sample-ppp thin-intensity max-intensity 0 1)
-        obs-y (map (fn [t] (sample-right-normal (+ gp-mean (f t)) 1 )) obs-times)
-        aug-y (map (fn [t] (sample-left-normal (+ gp-mean (f t)) 1 )) aug-times)
-        obs-map (into (avl/sorted-map) (map vector obs-times obs-y))
-        aug-map (into (avl/sorted-map) (map vector aug-times aug-y))
-        ]
+        thin-intensity (fn [x] (- max-intensity (intensity x)))]
     {:F F :gp-mean gp-mean :gp-var gp-var :gp-time-scale gp-time-scale :max-intensity max-intensity
-     :trials (take num-trials (repeatedly (fn [] {:obs-times obs-times
-                                                  :aug-times aug-times
-                                                  :y (merge obs-map aug-map)
-                                                  :start-t 0
-                                                  :end-t 1})))}))
+     :trials
+     (take
+      num-trials
+      (repeatedly (fn []
+                    (let [obs-times (sample-ppp intensity max-intensity 0 1)
+                          aug-times (sample-ppp thin-intensity max-intensity 0 1)
+                          obs-y (map (fn [t] (sample-right-normal (+ gp-mean (f t)) 1 )) obs-times)
+                          aug-y (map (fn [t] (sample-left-normal (+ gp-mean (f t)) 1 )) aug-times)
+                          obs-map (into (avl/sorted-map) (map vector obs-times obs-y))
+                          aug-map (into (avl/sorted-map) (map vector aug-times aug-y))]
+                        {:obs-times obs-times
+                         :aug-times aug-times
+                         :y (merge obs-map aug-map)
+                         :start-t 0
+                         :end-t 1}))))}))
+
+(defn intensity-functions
+  "Provides all relevant intensity functions for AB trials.
+  A modular function useful for unit testing"
+  [alpha intensity-A intensity-B max-intensity]
+  (let [i-Aar (fn [x] (* (- 1 (alpha x)) (intensity-A x)))
+        i-Arr (fn [x] (- max-intensity (intensity-A x)))
+        i-Bar (fn [x] (* (alpha x) (intensity-B x)))
+        i-Brr (fn [x] (- max-intensity (intensity-B x )))
+        i-Aaa (fn [x] (* (alpha x) (intensity-A x)))
+        i-Baa (fn [x] (* (- 1 (alpha x)) (intensity-B x)))]
+    [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr]))
 
 (defn generate-dual-trials [num-trials gp-var gp-time-scale switching-prob A B]
   (let [{F-A :F gp-mean-A :gp-mean max-intensity :max-intensity} A
@@ -50,22 +65,20 @@
                             g (if (= switching 1) (comp first G) zero-fn)
                             gp-mean-AB (sample-normal 1)
                             alpha (comp probit (partial + gp-mean-AB) g)
-                            intensity (fn [t] (+ (* (alpha t) (intensity-A t))
-                                                 (* (- 1 (alpha t)) (intensity-B t))))
-                            obs-times (sample-ppp intensity max-intensity 0 1)
-                            intensity-Aar (fn [x] (* (- 1 (alpha x)) (intensity-A x)))
-                            Aar (sample-ppp intensity-Aar max-intensity 0 1)
-                            intensity-Arr (fn [x] (- max-intensity (intensity-A x)))
-                            Arr (sample-ppp intensity-Arr max-intensity 0 1)
-                            intensity-Bar (fn [x] (* (alpha x) (intensity-B x)))
-                            Bar (sample-ppp intensity-Bar max-intensity 0 1)
-                            intensity-Brr (fn [x] (- max-intensity (intensity-B x )))
-                            Brr (sample-ppp intensity-Brr max-intensity 0 1)
-                            ass-prob (fn [x] (/ (* (- 1 (alpha x)) (intensity-B x))
-                                                (+ (* (alpha x) (intensity-A x))
-                                                   (* (- 1 (alpha x)) (intensity-B x)))))
-                            ass-pred (fn [t] (= 1 (sample-binomial 1 :size 1 :prob (ass-prob t))))
-                            [Baa Aaa] (group-bool ass-pred obs-times)
+                            [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
+                                                                   alpha
+                                                                   intensity-A
+                                                                   intensity-B
+                                                                   max-intensity)
+                            start-t 0
+                            end-t 1
+                            Aaa (sample-ppp i-Aaa max-intensity start-t end-t)
+                            Aar (sample-ppp i-Aar max-intensity start-t end-t)
+                            Arr (sample-ppp i-Arr max-intensity start-t end-t)
+                            Baa (sample-ppp i-Baa max-intensity start-t end-t)
+                            Bar (sample-ppp i-Bar max-intensity start-t end-t)
+                            Brr (sample-ppp i-Brr max-intensity start-t end-t)
+                            obs-times (concat Aaa Baa)
                             m-AB (comp (partial + gp-mean-AB) g)
                             Aar-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aar)
                             Aar-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Aar)
@@ -99,8 +112,8 @@
                          :switching switching
                          :y {:A y-A :B y-B :AB y-AB}
                          :G G
-                         :start-t 0
-                         :end-t 1}))))}))
+                         :start-t start-t
+                         :end-t end-t}))))}))
 
 (defn plot-single [x]
   (let [{F :F
@@ -113,12 +126,6 @@
         (ic/view (ip/histogram (apply concat (map :obs-times trials)) :title "PSTH" :nbins 20))
         (ic/view (ip/function-plot intensity 0 1 :title "Intensity")))))
 
-(def Atrials (generate-single-trials 15 0 2 0.2 100))
-(def Btrials (generate-single-trials 15 0 2 0.2 100))
-(def ABtrials (generate-dual-trials 15 2 0.2 0.5 Atrials Btrials))
-(plot-single Btrials)
-
-(def initial-state {:A Atrials :B Btrials :AB ABtrials})
 
 (defn ulogpdf-gamma [a b x]
  (if (neg? x)
@@ -160,6 +167,7 @@
                                             (map vector Baa Baa-y-AB)))]
     (assoc trial :y {:A y-A :B y-B :AB y-AB})))
 
+
 (defn update-dual-times [intensity-A intensity-B max-intensity trial]
   (let [{start-t :start-t
          end-t :end-t
@@ -167,19 +175,18 @@
          gp-mean :gp-mean
          obs-times :obs-times} trial
         alpha (comp probit (partial + gp-mean) first G)
-        intensity-Aar (fn [x] (* (- 1 (alpha x)) (intensity-A x)))
-        Aar (sample-ppp intensity-Aar max-intensity start-t end-t)
-        intensity-Arr (fn [x] (- max-intensity (intensity-A x)))
-        Arr (sample-ppp intensity-Arr max-intensity start-t end-t)
-        intensity-Bar (fn [x] (* (alpha x) (intensity-B x)))
-        Bar (sample-ppp intensity-Bar max-intensity start-t end-t)
-        intensity-Brr (fn [x] (- max-intensity (intensity-B x )))
-        Brr (sample-ppp intensity-Brr max-intensity start-t end-t)
-        ass-prob (fn [x] (/ (* (- 1 (alpha x)) (intensity-B x))
-                            (+ (* (alpha x) (intensity-A x))
-                               (* (- 1 (alpha x)) (intensity-B x)))))
-        ass-pred (fn [t] (= 1 (sample-binomial 1 :size 1 :prob (ass-prob t))))
-        [Baa Aaa] (group-bool ass-pred obs-times)]
+        [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
+                                               alpha
+                                               intensity-A
+                                               intensity-B
+                                               max-intensity)
+        Aar (sample-ppp i-Aar max-intensity start-t end-t)
+        Arr (sample-ppp i-Arr max-intensity start-t end-t)
+        Bar (sample-ppp i-Bar max-intensity start-t end-t)
+        Brr (sample-ppp i-Brr max-intensity start-t end-t)
+        AB-prob (fn [x] (/ (i-Aaa x) (+ (i-Aaa x) (i-Baa x))))
+        AB-pred (fn [t] (= 1 (sample-binomial 1 :size 1 :prob (AB-prob t))))
+        [Aaa Baa] (group-bool AB-pred obs-times)]
     (assoc trial :Aar Aar :Arr Arr :Bar Bar :Brr Brr :Baa Baa :Aaa Aaa)))
 
 (defn update-dual-trials [state]
@@ -329,33 +336,25 @@
                      update-gp-mean)]
     (update state)))
 
-
-(defn test-update-dual-trials [state]
-  (let [{F-A :F gp-mean-A :gp-mean max-intensity :max-intensity} (:A state)
-        {F-B :F gp-mean-B :gp-mean max-intensity :max-intensity} (:B state)
-        f-A (comp first F-A)
-        m-A (comp (partial + gp-mean-A ) f-A)
-        intensity-A (comp (partial * max-intensity) probit m-A)
-        f-B (comp first F-B)
-        m-B (comp (partial + gp-mean-B ) f-B)
-        intensity-B (comp (partial * max-intensity) probit m-B)
-        {trials :trials} (:AB state)
-        update-ys (partial update-dual-ys m-A m-B)
-        update-trial update-ys
-        ]
-    (assoc-in state [:AB :trials] (map update-trial trials))))
-
 (def transition (comp
                  update-dual-trials
-                 (partial update-single-intensity :A)
-                 (partial update-single-trials :A)
                  (partial update-single-intensity :B)
-                 (partial update-single-trials :B)))
+                 (partial update-single-trials :B)
+                 (partial update-single-intensity :A)
+                 (partial update-single-trials :A)))
 
+(def Atrials (generate-single-trials 4 0 2 0.2 100))
+(def Btrials (generate-single-trials 4 0 2 0.2 100))
+(def ABtrials (generate-dual-trials 4 2 0.2 0.5 Atrials Btrials))
 
+(def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
-(def iterates (doall (take 200 mcmc)))
-
+(def iterates (doall (take 200 (drop 10 mcmc))))
+(plot-intensity :A iterates Atrials)
+(plot-intensity :B iterates Btrials)
+(def foo (second (get-in (last iterates) [:A :trials])))
+(type (:aug-times foo))
+(= (sort (concat (:obs-times foo) (:aug-times foo))) (keys (:y foo)))
 (defn plot-intensity [typ iterates truth]
   (let[
        mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
@@ -374,7 +373,34 @@
       (ic/view ribbon)
       )))
 
-(plot-intensity :A iterates Atrials)
+(defn plot-gp [typ iterates truth]
+  (let[
+       mean-function (fn [x] (mean (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map typ iterates))))
+       lower-function (fn [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map typ iterates)) :probs 0.025))
+       upper-function (fn [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map typ iterates)) :probs 0.975))
+       ribbon (ip/function-plot mean-function 0 1)
+       ]
+    (do
+      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 0) 0 java.awt.Color/red)
+      (ip/add-function ribbon upper-function 0 1 :series-label 1)
+      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 1) 0 java.awt.Color/pink)
+      (ip/add-function ribbon lower-function 0 1 :series-label 2)
+      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 2) 0 java.awt.Color/pink)
+      (ip/add-function ribbon (fn [x] (+ (:gp-mean truth) ((comp first (:F truth)) x))) 0 1 :series-label 3)
+      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 3) 0 java.awt.Color/black)
+      (ic/view ribbon)
+      )))
+
+(defn plot-param [param typ iterates]
+  (ic/view (ip/histogram (map (fn [x] (param (typ x))) iterates))))
+
+(ic/view (ip/histogram (map (fn [x] (param (typ x))) iterates)))
+(ic/view (ip/histogram (:aug-times (second (:trials (:A (first iterates)))))))
+(plot-param :gp-time-scale :A iterates)
+(plot-param :gp-mean :A iterates)
+(plot-gp :A iterates Atrials)
+(plot-gp :B iterates Btrials)
+(ic/view (ip/function-plot (comp first (:F (:A (nth iterates 60)))) 0 1))
 
 (defn mean-function [x] (mean (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map :B iterates))))
 (defn lower-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map :B iterates)) :probs 0.025))
@@ -433,3 +459,48 @@ initial-state
 
 ( (:G (first (:trials (:AB initial-state)))) 0)
 ( (:G (first (:trials (:AB updated-state)))) 0)
+
+(def max-intensity (:max-intensity Atrials))
+(def F-A (:F Atrials))
+(def gp-mean-A (:gp-mean Atrials))
+(def f-A (comp first F-A))
+(def m-A (comp (partial + gp-mean-A ) f-A))
+(def intensity-A (comp (partial * max-intensity) probit m-A))
+(def F-B (:F Btrials))
+(def gp-mean-B (:gp-mean Btrials))
+(def f-B (comp first F-B))
+(def m-B (comp (partial + gp-mean-B ) f-B))
+(def intensity-B (comp (partial * max-intensity) probit m-B))
+(def G (:G (first (:trials ABtrials))))
+(def gp-mean-AB (:gp-mean (first (:trials ABtrials))))
+(def g (comp first G))
+(def m-AB (comp (partial + gp-mean-AB) g))
+(def alpha (comp probit m-AB))
+(ic/view (ip/function-plot intensity-A 0 1))
+(ic/view (ip/function-plot intensity-B 0 1))
+(ic/view (ip/function-plot alpha 0 1))
+(let [[i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions alpha intensity-A intensity-B max-intensity)]
+;  (ic/view (ip/function-plot #(+ (i-Arr %) (intensity-A %)) 0 1))
+;  (ic/view (ip/function-plot #(+ (i-Aaa %) (i-Aar %)) 0 1))
+ ;(ic/view (ip/function-plot #(+ (i-Brr %) (intensity-B %)) 0 1))
+  (ic/view (ip/function-plot #(+ (i-Baa %) (i-Bar %)) 0 1))
+  )
+
+(def foo (sample-ppp intensity-A max-intensity 0 1))
+(def bar (sample-ppp intensity-A max-intensity 0 1))
+(last (concat foo bar))
+
+
+(ic/view (ip/histogram (:aug-times (first (:trials (:A initial-state)))) :nbins 100))
+(ic/view (ip/histogram (:aug-times (first (:trials (:A (update-single-trials :A initial-state))))) :nbins 100))
+(clojure.repl/source max)
+(test-update-single-trials :A initial-state)
+(:aug-times (first (:trials (:A (first iterates)))))
+(type (:aug-times (first (:trials (:A initial-state)))))
+(def after-trial (update-single-times (fn [x] 10) 10 (first (:trials (:A initial-state)))))
+(type (:aug-times after-trial))
+(update-single-intensity :A initial-state)
+(get-in initial-state [:A :y])
+(keys (:trials (:A initial-state)))
+(=  (:obs-times  (first (:trials (:A initial-state))))
+    (:obs-times  (second (:trials (:A initial-state)))))
