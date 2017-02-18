@@ -1,14 +1,14 @@
 (ns ipp4clj.multiplexing
   (:require [clojure.core.matrix :refer :all]
-            [incanter.core :as ic]
             [incanter.stats :refer :all]
-            [incanter.charts :as ip]
             [clojure.data.avl :as avl]
             [ssm4clj.core :refer :all]
             [ssm4clj.misc :refer :all]
-            [ipp4clj.misc :refer :all]))
+            [ipp4clj.misc :refer :all]
+            [gorilla-plot.core :as plot]))
 
 (defn zero-fn [x] 0.0)
+(defn zero-3fn [x] (matrix [0.0 0.0 0.0]))
 (defn group-bool [pred coll]
   (let [bool-map (group-by pred coll)]
     [(get bool-map true) (get bool-map false)]))
@@ -60,9 +60,10 @@
      :trials (take
               num-trials
               (repeatedly
-               (fn [] (let [G (sample-gp {} gp-var gp-time-scale)
+               (fn [] (let [
                             switching (sample-binomial 1 :size 1 :prob switching-prob)
-                            g (if (= switching 1) (comp first G) zero-fn)
+                            G (if (= switching 1) (sample-gp {} gp-var gp-time-scale) zero-3fn)
+                            g (comp first G)
                             gp-mean-AB (sample-normal 1)
                             alpha (comp probit (partial + gp-mean-AB) g)
                             [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
@@ -115,23 +116,11 @@
                          :start-t start-t
                          :end-t end-t}))))}))
 
-(defn plot-single [x]
-  (let [{F :F
-         gp-mean :gp-mean
-         max-intensity :max-intensity
-         trials :trials} x
-        f (comp first F)
-        intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)]
-    (do (ic/view (ip/function-plot f 0 1 :title "Gaussian Process f"))
-        (ic/view (ip/histogram (apply concat (map :obs-times trials)) :title "PSTH" :nbins 20))
-        (ic/view (ip/function-plot intensity 0 1 :title "Intensity")))))
-
-
 (defn ulogpdf-gamma [a b x]
  (if (neg? x)
      Double/NEGATIVE_INFINITY
      (- (* (dec a) (log x)) (* b x))))
-(defn logprior-gp-time-scale [x] (ulogpdf-gamma 2 1 x))
+(defn logprior-gp-time-scale [x] (ulogpdf-gamma 2 5 x))
 (defn logprior-gp-var [x] (ulogpdf-gamma 2 1 x))
 
 (defn update-dual-ys [m-A m-B trial]
@@ -205,11 +194,29 @@
         ]
     (assoc-in state [:AB :trials] (map update-trial trials))))
 
-(defn dual-log-likelihood [gp-time-scale gp-var trial]
+(defn dual-log-likelihood
+  [gp-time-scale gp-var trial]
   (let [y (get-in trial [:y :AB])
         times (keys y)
         obs (vals y)]
     (log-likelihood times obs 1 gp-var gp-time-scale)))
+
+(defn switch-log-likelihood
+  [gp-time-scale gp-var trial]
+ (let [y (get-in trial [:y :AB])
+       times (keys y)
+       obs (vals y)
+       {switching :switching
+        gp-mean :gp-mean} trial]
+   (if (= switching 1)
+     (log-likelihood times obs 1 gp-var gp-time-scale)
+     (reduce + 0 (map logpdf-normal obs (repeat gp-mean) (repeat 1.0))))))
+
+(dual-log-likelihood 1.0 1.0 (first (:trials ABtrials)))
+(dual-log-likelihood 0 0.2 1.0 1.0 (first (:trials ABtrials)))
+
+(defn dual-switching )
+
 
 (defn update-dual-gp-time-scale [state]
   (let [{gp-var :gp-var
@@ -221,6 +228,7 @@
                                  (map (partial dual-log-likelihood x gp-var) trials))))]
     (assoc-in state [:AB :gp-time-scale] (sample-slice conditional 1 gp-time-scale))))
 
+;;TODO SHOULD THIS BE MEAN CENTERED
 (defn update-dual-gp-var [state]
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
@@ -233,12 +241,15 @@
 
 
 (defn dual-gp-mean [gp-var gp-time-scale trial]
-  (let [{y :AB} (:y trial)
-        times (keys y)
-        obs (vals y)
-        mus2 (mean-conditional times obs 1 gp-var gp-time-scale)
-        new-mean (sample-normal 1 :mean (first mus2) :sd (sqrt (second mus2)))]
-    (assoc trial :gp-mean new-mean)))
+  (if (= (:switching trial)) 1
+      (let [{y :AB} (:y trial)
+            times (keys y)
+            obs (vals y)
+            mus2 (mean-conditional times obs 1 gp-var gp-time-scale)
+            new-mean (sample-normal 1 :mean (first mus2) :sd (sqrt (second mus2)))]
+        (assoc trial :gp-mean new-mean))
+      ;;TODO IMPLEMENT DRAW FROM UNIVARIATE NORMAL
+      ))
 
 (defn update-dual-gp-mean [state]
   (let [{gp-var :gp-var
@@ -247,21 +258,22 @@
     (assoc-in state [:AB :trials] (map (partial dual-gp-mean gp-var gp-time-scale) trials))))
 
 (defn dual-G [gp-var gp-time-scale trial]
-  (let [{y :AB} (:y trial)
-        {gp-mean :gp-mean} trial
-        times (keys y)
-        obs (vals y)
-        centered-obs (map (fn [x] (- x gp-mean)) obs)
-        pivots (FFBS times centered-obs 1 gp-var gp-time-scale)]
-    (assoc trial :G (sample-gp pivots gp-var gp-time-scale))))
+  (let [{switching :switching} trial]
+    (if (= switching 0)
+      (assoc trial :G zero-3fn)
+      (let [{y :AB} (:y trial)
+            {gp-mean :gp-mean} trial
+            times (keys y)
+            obs (vals y)
+            centered-obs (map (fn [x] (- x gp-mean)) obs)
+            pivots (FFBS times centered-obs 1 gp-var gp-time-scale)]
+        (assoc trial :G (sample-gp pivots gp-var gp-time-scale))))))
 
 (defn update-dual-G [state]
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
-         trials :trials} (:AB state)
-        foo (map (partial dual-G gp-var gp-time-scale) (:trials (:AB state)))
-        ]
-    (assoc-in state [:AB :trials] foo)))
+         trials :trials} (:AB state)]
+    (assoc-in state [:AB :trials] (map (partial dual-G gp-var gp-time-scale) trials))))
 
 (defn update-single-ys [gp-mean f trial]
   (let [{obs-times :obs-times
@@ -337,170 +349,201 @@
     (update state)))
 
 (def transition (comp
+                 update-dual-G
+                 update-dual-gp-time-scale
+                 update-dual-gp-var
                  update-dual-trials
                  (partial update-single-intensity :B)
                  (partial update-single-trials :B)
                  (partial update-single-intensity :A)
                  (partial update-single-trials :A)))
 
-(def Atrials (generate-single-trials 4 0 2 0.2 100))
-(def Btrials (generate-single-trials 4 0 2 0.2 100))
-(def ABtrials (generate-dual-trials 4 2 0.2 0.5 Atrials Btrials))
+(def Atrials (generate-single-trials 6 0 2 0.2 100))
+(def Btrials (generate-single-trials 6 0 2 0.2 100))
+(def ABtrials (generate-dual-trials 6 2 0.2 0.5 Atrials Btrials))
 
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
-(def iterates (doall (take 200 (drop 10 mcmc))))
-(plot-intensity :A iterates Atrials)
-(plot-intensity :B iterates Btrials)
-(def foo (second (get-in (last iterates) [:A :trials])))
-(type (:aug-times foo))
-(= (sort (concat (:obs-times foo) (:aug-times foo))) (keys (:y foo)))
-(defn plot-intensity [typ iterates truth]
-  (let[
-       mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
-       lower-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.025))
-       upper-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.975))
-       ribbon (ip/function-plot mean-function 0 1)
-       ]
-    (do
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 0) 0 java.awt.Color/red)
-      (ip/add-function ribbon upper-function 0 1 :series-label 1)
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 1) 0 java.awt.Color/pink)
-      (ip/add-function ribbon lower-function 0 1 :series-label 2)
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 2) 0 java.awt.Color/pink)
-      (ip/add-function ribbon (fn [x] (* (:max-intensity truth) (probit (+ (:gp-mean truth) ((comp first (:F truth)) x))))) 0 1 :series-label 3)
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 3) 0 java.awt.Color/black)
-      (ic/view ribbon)
-      )))
+(def iterates (doall (take 100 (drop 10 mcmc))))
 
-(defn plot-gp [typ iterates truth]
-  (let[
-       mean-function (fn [x] (mean (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map typ iterates))))
-       lower-function (fn [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map typ iterates)) :probs 0.025))
-       upper-function (fn [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map typ iterates)) :probs 0.975))
-       ribbon (ip/function-plot mean-function 0 1)
-       ]
-    (do
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 0) 0 java.awt.Color/red)
-      (ip/add-function ribbon upper-function 0 1 :series-label 1)
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 1) 0 java.awt.Color/pink)
-      (ip/add-function ribbon lower-function 0 1 :series-label 2)
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 2) 0 java.awt.Color/pink)
-      (ip/add-function ribbon (fn [x] (+ (:gp-mean truth) ((comp first (:F truth)) x))) 0 1 :series-label 3)
-      (.setSeriesPaint (.getRenderer (.getPlot ribbon) 3) 0 java.awt.Color/black)
-      (ic/view ribbon)
-      )))
+(defn plot-intensity
+  ([typ iterates]
+   (let[
+        ;mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
+        lower-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.025))
+        upper-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.975))
+        ]
+     (plot/compose (plot/plot upper-function [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue")
+                   (plot/plot lower-function [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue"))
+     ))
+  ([typ iterates truth]
+   (let [true-function (fn [x] (* (:max-intensity truth) (probit (+ (:gp-mean truth) ((comp first (:F truth)) x)))))]
+     (plot/compose
+      (plot-intensity typ iterates)
+      (plot/plot true-function [0 1] :plot-range [[0 1] [0 100]] :colour "#FA8072"))
+     )
+   ))
+
+(defn plot-gp
+  ([typ iterates]
+   (let[
+        ;mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
+        lower-function (fn [x] (quantile (map (fn [y] (first ((:F y) x))) (map typ iterates)) :probs 0.025))
+        upper-function (fn [x] (quantile (map (fn [y] (first ((:F y) x))) (map typ iterates)) :probs 0.975))
+        ]
+     (plot/compose (plot/plot upper-function [0 1] :plot-range [[0 1] [-4 4]] :colour "skyblue")
+                   (plot/plot lower-function [0 1] :colour "skyblue"))
+     ))
+  ([typ iterates truth]
+   (let [true-function (fn [x] ((comp first (:F truth)) x))]
+     (plot/compose
+      (plot-gp typ iterates)
+      (plot/plot true-function [0 1] :colour "#FA8072"))
+     )
+   ))
+
 
 (defn plot-param [param typ iterates]
-  (ic/view (ip/histogram (map (fn [x] (param (typ x))) iterates))))
+  (plot/histogram (map (fn [x] (param (typ x))) iterates) :normalise :probability-density :bins 30))
 
-(ic/view (ip/histogram (map (fn [x] (param (typ x))) iterates)))
-(ic/view (ip/histogram (:aug-times (second (:trials (:A (first iterates)))))))
-(plot-param :gp-time-scale :A iterates)
-(plot-param :gp-mean :A iterates)
+(defn plot-trace [param typ iterates]
+  (plot/list-plot (map (fn [x] (param (typ x))) iterates) :joined true) )
+
+(defn quartile-functions
+  [function-stream]
+  (let [lower-function (fn [x] (quantile (map (fn [y] (y x)) function-stream) :probs 0.025))
+        upper-function (fn [x] (quantile (map (fn [y] (y x)) function-stream) :probs 0.975))]
+    [lower-function upper-function]))
+
+(defn extract-params [iterates]
+  (let [max-intensity (map #(get-in % [:A :max-intensity]) iterates)
+        f-A (map #(comp first (get-in % [:A :F])) iterates)
+        gp-mean-A (map #(get-in % [:A :gp-mean]) iterates)
+        f-B (map #(comp first (get-in % [:B :F])) iterates)
+        gp-mean-B (map #(get-in % [:B :gp-mean]) iterates)
+        intensity-A (map (fn [Lambda gp-mean f] (fn [t] (* Lambda (probit (+ gp-mean (f t)))))) max-intensity gp-mean-A f-A)
+        intensity-B (map (fn [Lambda gp-mean f] (fn [t] (* Lambda (probit (+ gp-mean (f t)))))) max-intensity gp-mean-B f-B)]
+    {:intensity-A intensity-A :intensity-B intensity-B}
+    ))
+
+(defn plot-dual [i iterates truth]
+  (let [g-AB (map #(comp first (:G (nth (get-in % [:AB :trials]) i))) iterates)
+        gp-mean-AB (map #(:gp-mean (nth (get-in % [:AB :trials]) i)) iterates)
+        mean-histogram (plot/histogram gp-mean-AB :bins 30)
+        mean-traceplot (plot/list-plot gp-mean-AB :joined true)
+        g-plot (plot-gp-dual g-AB i truth)
+        intensity-plot (plot-intensity-dual i iterates truth gp-mean-AB g-AB)
+        ]
+    [mean-histogram mean-traceplot g-plot intensity-plot]))
+
+(defn plot-gp-dual
+  ([g-AB]
+   (let [[lower-g upper-g] (quartile-functions g-AB)
+         g-plot (plot/compose (plot/plot upper-g [0 1] :plot-range [[0 1] [-4 4]] :colour "skyblue")
+                               (plot/plot lower-g [0 1] :colour "skyblue"))]
+     g-plot))
+  ([g-AB i truth]
+   (let [g-true (comp first (:G (nth (get-in truth [:AB :trials]) i)))]
+     (plot/compose
+      (plot/plot g-true [0 1] :plot-range [[0 1] [-4 4]] :colour "#FA8072")
+      (plot-gp-dual g-AB)))
+     ))
+
+(defn plot-intensity-dual
+  ([i iterates gp-mean-AB g-AB]
+   (let [{intensity-A :intensity-A
+          intensity-B :intensity-B} (extract-params iterates)
+         alpha (map (fn [gp-mean g] (fn [t] (probit (+ gp-mean (g t))))) gp-mean-AB g-AB)
+         intensity-AB (map (fn [in-A in-B a]
+                             (fn [t] (+ (* (a t) (in-A t))
+                                        (* (- 1 (a t)) (in-B t))))) intensity-A intensity-B alpha)
+         [lower-intensity upper-intensity] (quartile-functions intensity-AB)]
+     (plot/compose (plot/plot upper-intensity [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue")
+                   (plot/plot lower-intensity [0 1] :colour "skyblue"))
+     ))
+  ([i iterates truth gp-mean-AB g-AB]
+   (let [{intensity-AB :intensity-AB} (get-truth i truth)]
+     (plot/compose
+      (plot/plot intensity-AB [0 1] :plot-range [[0 1] [0 100]] :colour "#FA8072")
+      (plot-intensity-dual i iterates gp-mean-AB g-AB)))
+   ))
+
+
+(defn get-truth [i truth]
+  (let [max-intensity (get-in truth [:A :max-intensity])
+        f-A (comp first (get-in truth [:A :F]))
+        gp-mean-A (get-in truth [:A :gp-mean])
+        f-B (comp first (get-in truth [:B :F]))
+        gp-mean-B (get-in truth [:B :gp-mean])
+        g-AB (comp first (:G (nth (get-in truth [:AB :trials]) i)))
+        gp-mean-AB (:gp-mean (nth (get-in truth [:AB :trials]) i))
+        intensity-A (fn [t] (* max-intensity (probit (+ gp-mean-A (f-A t)))))
+        intensity-B (fn [t] (* max-intensity (probit (+ gp-mean-B (f-B t)))))
+        alpha (fn [t] (probit (+ gp-mean-AB (g-AB t))))
+        intensity-AB (fn [t] (+ (* (alpha t) (intensity-A t))
+                                (* (- 1 (alpha t)) (intensity-B t))))]
+    {:intensity-AB intensity-AB
+     :g-AB g-AB}
+    ))
+
+
+(defn plot-gp-duals [iterates true-Gs]
+  (let [Gstreams (for [i (range 0 (count (:trials ABtrials)))]
+                   (map #(:G (nth (get-in % [:AB :trials]) i)) iterates))]
+    (map plot-gp-dual Gstreams true-Gs)))
+
 (plot-gp :A iterates Atrials)
-(plot-gp :B iterates Btrials)
-(ic/view (ip/function-plot (comp first (:F (:A (nth iterates 60)))) 0 1))
 
-(defn mean-function [x] (mean (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map :B iterates))))
-(defn lower-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map :B iterates)) :probs 0.025))
-(defn upper-function [x] (quantile (map (fn [y] (+ (:gp-mean y) (first ((:F y) x)))) (map :B iterates)) :probs 0.975))
-(def ribbon (ip/function-plot mean-function 0 1))
-(.setSeriesPaint (.getRenderer (.getPlot ribbon) 0) 0 java.awt.Color/red)
-(ip/add-function ribbon upper-function 0 1 :series-label 1)
-(.setSeriesPaint (.getRenderer (.getPlot ribbon) 1) 0 java.awt.Color/pink)
-(ip/add-function ribbon lower-function 0 1 :series-label 2)
-(.setSeriesPaint (.getRenderer (.getPlot ribbon) 2) 0 java.awt.Color/pink)
-(ip/add-function ribbon (fn [x] (+ (:gp-mean Btrials) ((comp first (:F Btrials)) x))) 0 1 :series-label 3)
-(.setSeriesPaint (.getRenderer (.getPlot ribbon) 3) 0 java.awt.Color/black)
-(ic/view ribbon)
-
-(ic/view (ip/time-series-plot (range 0 (ic/length iterates)) (map :gp-mean iterates)))
-(ic/view (ip/histogram (map :gp-mean iterates) :nbins 100))
-(ic/view (ip/histogram (map :gp-var iterates) :nbins 100))
-(ic/view (ip/histogram (map :gp-time-scale iterates) :nbins 100))
-
-(map (partial dual-G 1 1) (:trials (:AB initial-state)))
-((partial dual-G 1 1) (first (:AB initial-state)))
-(map (partial dual-G 1 1) (:AB initial-state))
-
-
-(keys (:AB initial-state))
-(update-single-intensity :A (update-single-trials :A initial-state))
-partition-by
-filter
-(group-by #(> 4 %) (range 1 10))
-(get  (group-by #(> 4 %) (range 1 10)) true)
-(group-bool #(> 4 %) (range 1 10))
-
-(assoc {:foo 11} :a 3 :b 5 :d 3)
-
-(concat [[99 100] [100 111]] [[1 1] [2 3] [4 5]] [[14 5] [5 6] [7 8]])
-
-(reduce (fn [m x] (assoc m x (inc x))) (avl/sorted-map) [1 2 3])
-
-(reduce + 0 [])
-(mean-function 0.3)
-
-(map (partial dual-G 2 0.2) (:trials (:AB initial-state)))
-
-(dual-G 2 0.2 (first (:trials (:AB initial-state))))
-
-(map (partial dual-G 1 1) (:trials (:AB initial-state)))
-
-initial-state
-(update-dual-G initial-state)
-(def updated-state (update-dual-G initial-state))
-((:G  (dual-G 1 1 (first (:trials (:AB initial-state))))) 0)
-(:trials (:AB updated-state))
-
-(:gp-mean (first (:trials (:AB initial-state))))
-(:gp-mean (first (:trials (:AB updated-state))))
-
-( (:G (first (:trials (:AB initial-state)))) 0)
-( (:G (first (:trials (:AB updated-state)))) 0)
-
-(def max-intensity (:max-intensity Atrials))
-(def F-A (:F Atrials))
-(def gp-mean-A (:gp-mean Atrials))
-(def f-A (comp first F-A))
-(def m-A (comp (partial + gp-mean-A ) f-A))
-(def intensity-A (comp (partial * max-intensity) probit m-A))
-(def F-B (:F Btrials))
-(def gp-mean-B (:gp-mean Btrials))
-(def f-B (comp first F-B))
-(def m-B (comp (partial + gp-mean-B ) f-B))
-(def intensity-B (comp (partial * max-intensity) probit m-B))
-(def G (:G (first (:trials ABtrials))))
-(def gp-mean-AB (:gp-mean (first (:trials ABtrials))))
-(def g (comp first G))
-(def m-AB (comp (partial + gp-mean-AB) g))
-(def alpha (comp probit m-AB))
-(ic/view (ip/function-plot intensity-A 0 1))
-(ic/view (ip/function-plot intensity-B 0 1))
-(ic/view (ip/function-plot alpha 0 1))
-(let [[i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions alpha intensity-A intensity-B max-intensity)]
-;  (ic/view (ip/function-plot #(+ (i-Arr %) (intensity-A %)) 0 1))
-;  (ic/view (ip/function-plot #(+ (i-Aaa %) (i-Aar %)) 0 1))
- ;(ic/view (ip/function-plot #(+ (i-Brr %) (intensity-B %)) 0 1))
-  (ic/view (ip/function-plot #(+ (i-Baa %) (i-Bar %)) 0 1))
-  )
-
-(def foo (sample-ppp intensity-A max-intensity 0 1))
-(def bar (sample-ppp intensity-A max-intensity 0 1))
-(last (concat foo bar))
-
-
-(ic/view (ip/histogram (:aug-times (first (:trials (:A initial-state)))) :nbins 100))
-(ic/view (ip/histogram (:aug-times (first (:trials (:A (update-single-trials :A initial-state))))) :nbins 100))
-(clojure.repl/source max)
-(test-update-single-trials :A initial-state)
-(:aug-times (first (:trials (:A (first iterates)))))
-(type (:aug-times (first (:trials (:A initial-state)))))
-(def after-trial (update-single-times (fn [x] 10) 10 (first (:trials (:A initial-state)))))
-(type (:aug-times after-trial))
-(update-single-intensity :A initial-state)
-(get-in initial-state [:A :y])
-(keys (:trials (:A initial-state)))
-(=  (:obs-times  (first (:trials (:A initial-state))))
-    (:obs-times  (second (:trials (:A initial-state)))))
+(defn summarize [iterates]
+ (table-view 
+  [[(latex-view "\\lambda_A(t)=\\Lambda \\Phi (\\mu_A+f_A(t))") 
+    "Intensity Function of A-trials. Truth red" 
+    (plot-intensity :A iterates Atrials)
+    "NA"]
+   [(latex-view "f_A(t)") 
+    "GP Function of A-trials. Truth red" 
+    (plot-gp :A iterates Atrials)
+    "NA"]
+   [(latex-view "\\mu_A") 
+    (str "Defines mean Intensity of A-trials. Truth " (:gp-mean Atrials)) 
+    (plot-param :gp-mean :A iterates)
+    (plot-trace :gp-mean :A iterates)]
+   [(latex-view "\\tau_A") 
+    (str "Characteristic time-scale of Gaussian Process f. Truth " (:gp-time-scale Atrials)) 
+    (plot-param :gp-time-scale :A iterates)
+    (plot-trace :gp-time-scale :A iterates)]
+   [(latex-view "\\sigma^2_A") 
+    (str "Variance of Gaussian Process f. Truth " (:gp-var Atrials)) 
+    (plot-param :gp-var :A iterates)
+    (plot-trace :gp-var :A iterates)
+    ]
+   [(latex-view "\\lambda_B(t)=\\Lambda \\Phi (\\mu_B+f_B(t))") 
+    "Intensity Function of B-trials" 
+    (plot-intensity :B iterates Btrials)
+    "NA"]
+   [(latex-view "f_B(t)") 
+    "GP Function of B-trials. Truth red" 
+    (plot-gp :B iterates Btrials)
+    "NA"]
+   [(latex-view "\\mu_B") 
+    (str "Defines mean Intensity of B-trials. Truth " (:gp-mean Btrials)) 
+    (plot-param :gp-mean :B iterates)
+    (plot-trace :gp-mean :B iterates)]
+    [(latex-view "\\tau_B") 
+    (str "Characteristic time-scale of Gaussian Process f_B. Truth " (:gp-time-scale Btrials)) 
+    (plot-param :gp-time-scale :B iterates)
+    (plot-trace :gp-time-scale :B iterates)]
+   [(latex-view "\\sigma^2_B") 
+    (str "Variance of Gaussian Process f_B. Truth " (:gp-var Btrials)) 
+    (plot-param :gp-var :B iterates)
+    (plot-trace :gp-var :B iterates)]
+   [(latex-view "\\tau_{AB}") 
+    (str "Characteristic time-scale of all Gaussian Processes g_AB. Truth " (:gp-time-scale ABtrials)) 
+    (plot-param :gp-time-scale :AB iterates)
+    (plot-trace :gp-time-scale :AB iterates)]
+   [(latex-view "\\sigma^2_{AB}") 
+    (str "Variance of all Gaussian Processes g_AB. Truth " (:gp-var ABtrials)) 
+    (plot-param :gp-var :AB iterates)
+    (plot-trace :gp-var :AB iterates)] ]
+    :columns 
+  ["Paramter" "Description" "Posterior Summary" "TracePlot"]) )
