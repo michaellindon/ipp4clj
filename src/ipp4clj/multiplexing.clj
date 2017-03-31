@@ -7,6 +7,8 @@
             [ipp4clj.misc :refer :all]
             [gorilla-plot.core :as plot]))
 
+(defn sample-bool [p] (< (rand) p))
+(defn sample-bernoulli [p] (if (sample-bool p) 1 0))
 (defn zero-fn [x] 0.0)
 (defn zero-3fn [x] (matrix [0.0 0.0 0.0]))
 (defn group-bool [pred coll]
@@ -14,7 +16,8 @@
     [(get bool-map true) (get bool-map false)]))
 
 (defn generate-single-trials [num-trials gp-mean gp-var gp-time-scale max-intensity]
-  (let [F (sample-gp {} gp-var gp-time-scale)
+  (let [;F (sample-gp {} gp-var gp-time-scale)
+        F (fn [x] [2 2 2])
         f (comp first F)
         intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)
         thin-intensity (fn [x] (- max-intensity (intensity x)))]
@@ -61,7 +64,8 @@
               num-trials
               (repeatedly
                (fn [] (let [
-                            switching (sample-binomial 1 :size 1 :prob switching-prob)
+                            switching (sample-bernoulli switching-prob)
+                            ;switching (sample-binomial 1 :size 1 :prob switching-prob)
                             G (if (= switching 1) (sample-gp {} gp-var gp-time-scale) zero-3fn)
                             g (comp first G)
                             gp-mean-AB (sample-normal 1)
@@ -120,7 +124,7 @@
  (if (neg? x)
      Double/NEGATIVE_INFINITY
      (- (* (dec a) (log x)) (* b x))))
-(defn logprior-gp-time-scale [x] (ulogpdf-gamma 5 10 x))
+(defn logprior-gp-time-scale [x] (ulogpdf-gamma 3 20 x))
 (defn logprior-gp-var [x] (ulogpdf-gamma 10 4 x))
 
 (defn update-dual-ys [m-A m-B trial]
@@ -174,7 +178,8 @@
         Bar (sample-ppp i-Bar max-intensity start-t end-t)
         Brr (sample-ppp i-Brr max-intensity start-t end-t)
         AB-prob (fn [x] (/ (i-Aaa x) (+ (i-Aaa x) (i-Baa x))))
-        AB-pred (fn [t] (= 1 (sample-binomial 1 :size 1 :prob (AB-prob t))))
+        AB-pred (fn [t] (= 1 (sample-bernoulli (AB-prob t))))
+        ;AB-pred (fn [t] (= 1 (sample-binomial 1 :size 1 :prob (AB-prob t))))
         [Aaa Baa] (group-bool AB-pred obs-times)]
     (assoc trial :Aar Aar :Arr Arr :Bar Bar :Brr Brr :Baa Baa :Aaa Aaa)))
 
@@ -255,6 +260,7 @@
                                  (map (partial dual-log-likelihood x gp-time-scale) active-trials))))]
     (assoc-in state [:AB :gp-var] (sample-slice conditional 1 gp-var))))
 
+(def s2-P 3)
 
 (defn dual-gp-mean [gp-var gp-time-scale trial]
   (if (= (:switching trial) 1)
@@ -262,12 +268,19 @@
             times (keys y)
             obs (vals y)
             mus2 (mean-conditional times obs 1 gp-var gp-time-scale)
-            new-mean (sample-normal 1 :mean (first mus2) :sd (sqrt (second mus2)))]
+            mu-L (first mus2)
+            s2-L (second mus2)
+            posterior-var (/ 1  (+ (/ 1 s2-L) (/ 1 s2-P)))
+            posterior-mean (* posterior-var (/ mu-L s2-L))
+            new-mean (sample-normal 1 :mean posterior-mean :sd (sqrt posterior-var))]
         (assoc trial :gp-mean new-mean))
       (let [{y :AB} (:y trial)
             obs (vals y)
-            ybar (mean obs)
-            new-mean (sample-normal 1 :mean ybar :sd (sqrt (/ 1.0 (count obs)))) ]
+            mu-L (mean obs)
+            s2-L (/ 1 (count obs))
+            posterior-var (/ 1  (+ (/ 1 s2-L) (/ 1 s2-P)))
+            posterior-mean (* posterior-var (/ mu-L s2-L))
+            new-mean (sample-normal 1 :mean posterior-mean :sd (sqrt posterior-var)) ]
         (assoc trial :gp-mean new-mean))
       ))
 
@@ -386,13 +399,13 @@
                  )
   )
 
-(def Atrials (generate-single-trials 15 0 2 0.2 100))
-(def Btrials (generate-single-trials 15 0 2 0.2 100))
-(def ABtrials (generate-dual-trials 15 2 0.2 0.5 Atrials Btrials))
+(def Atrials (generate-single-trials 15 0 5 0.1 100))
+(def Btrials (generate-single-trials 15 0 5 0.1 100))
+(def ABtrials (generate-dual-trials 15 5 0.1 0.5 Atrials Btrials))
 
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
-(def iterates (doall (take 5 (drop 1 mcmc))))
+(def iterates (doall (take 500 mcmc)))
 
 (defn plot-intensity
   ([typ iterates]
