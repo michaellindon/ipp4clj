@@ -7,6 +7,13 @@
             [ipp4clj.misc :refer :all]
             [gorilla-plot.core :as plot]))
 
+(defn quantile-integrate
+  ([f d n]
+   (let [delta (/ 1.0 n)
+         grid (map (icdf d) (range delta 1 delta))
+         f_i (map f grid)]
+     (/ (reduce + 0 f_i) n))))
+
 (defn sample-bool [p] (< (rand) p))
 (defn sample-bernoulli [p] (if (sample-bool p) 1 0))
 (defn zero-fn [x] 0.0)
@@ -14,6 +21,33 @@
 (defn group-bool [pred coll]
   (let [bool-map (group-by pred coll)]
     [(get bool-map true) (get bool-map false)]))
+
+(defn randomize-single-trials [C]
+  (let [{max-intensity :max-intensity
+         trials :trials} C
+        gp-mean (sample-normal 1)
+        gp-var (rand)
+        gp-time-scale (rand)
+        F (sample-gp {} gp-var gp-time-scale)
+        f (comp first F)
+        intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)
+        thin-intensity (fn [x] (- max-intensity (intensity x)))
+        t-mod (fn [t]
+                (let [{obs-times :obs-times} t
+                      aug-times (sample-ppp thin-intensity max-intensity 0 1)
+                      obs-y (map (fn [t] (sample-right-normal (+ gp-mean (f t)) 1 )) obs-times)
+                      aug-y (map (fn [t] (sample-left-normal (+ gp-mean (f t)) 1 )) aug-times)
+                      obs-map (into (avl/sorted-map) (map vector obs-times obs-y))
+                      aug-map (into (avl/sorted-map) (map vector aug-times aug-y))
+                      ]
+                  {:obs-times obs-times
+                   :aug-times aug-times
+                   :y (merge obs-map aug-map)
+                   :start-t 0
+                   :end-t 1} ))
+        t-new (map t-mod trials)]
+    (assoc C :trials t-new :gp-mean gp-mean :gp-var gp-var :gp-time-scale gp-time-scale :F F)))
+
 
 (defn generate-single-trials [num-trials gp-mean gp-var gp-time-scale max-intensity]
   (let [;F (sample-gp {} gp-var gp-time-scale)
@@ -49,6 +83,84 @@
         i-Aaa (fn [x] (* (alpha x) (intensity-A x)))
         i-Baa (fn [x] (* (- 1 (alpha x)) (intensity-B x)))]
     [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr]))
+
+(defn randomize-dual-trials [A B AB]
+  (let [
+        {F-A :F gp-mean-A :gp-mean max-intensity :max-intensity} A
+        {F-B :F gp-mean-B :gp-mean max-intensity :max-intensity} B
+        f-A (comp first F-A)
+        m-A (comp (partial + gp-mean-A) f-A)
+        intensity-A (comp (partial * max-intensity) probit m-A)
+        f-B (comp first F-B)
+        m-B (comp (partial + gp-mean-B ) f-B)
+        intensity-B (comp (partial * max-intensity) probit m-B)
+        gp-time-scale (rand)
+        gp-var (rand)
+        {trials :trials} AB
+        t-mod (fn [t]
+                (let [
+                      switching (sample-bernoulli 0.5)
+                      G (if (= switching 1) (sample-gp {} gp-var gp-time-scale) zero-3fn)
+                      g (comp first G)
+                      gp-mean-AB (sample-normal 1)
+                      alpha (comp probit (partial + gp-mean-AB) g)
+                      [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
+                                                             alpha
+                                                             intensity-A
+                                                             intensity-B
+                                                             max-intensity)
+                      start-t 0
+                      end-t 1
+                      Aaa (sample-ppp i-Aaa max-intensity start-t end-t)
+                      Aar (sample-ppp i-Aar max-intensity start-t end-t)
+                      Arr (sample-ppp i-Arr max-intensity start-t end-t)
+                      Baa (sample-ppp i-Baa max-intensity start-t end-t)
+                      Bar (sample-ppp i-Bar max-intensity start-t end-t)
+                      Brr (sample-ppp i-Brr max-intensity start-t end-t)
+                      obs-times (concat Aaa Baa)
+                      m-AB (comp (partial + gp-mean-AB) g)
+                      Aar-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aar)
+                      Aar-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Aar)
+                      Arr-y-A (map (fn [t] (sample-left-normal (m-A t) 1 )) Arr)
+                      Bar-y-B (map (fn [t] (sample-right-normal (m-B t) 1 )) Bar)
+                      Bar-y-AB (map (fn [t] (sample-right-normal (m-AB t) 1 )) Bar)
+                      Brr-y-B (map (fn [t] (sample-left-normal (m-B t) 1 )) Brr)
+                      Aaa-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aaa)
+                      Aaa-y-AB (map (fn [t] (sample-right-normal (m-AB t) 1 )) Aaa)
+                      Baa-y-B (map (fn [t] (sample-right-normal (m-B t) 1 )) Baa)
+                      Baa-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Baa)
+                      y-A (into (avl/sorted-map) (concat (map vector Aar Aar-y-A)
+                                                         (map vector Arr Arr-y-A)
+                                                         (map vector Aaa Aaa-y-A)))
+                      y-B (into (avl/sorted-map) (concat (map vector Bar Bar-y-B)
+                                                         (map vector Brr Brr-y-B)
+                                                         (map vector Baa Baa-y-B)))
+                      y-AB (into (avl/sorted-map) (concat (map vector Aar Aar-y-AB)
+                                                          (map vector Bar Bar-y-AB)
+                                                          (map vector Aaa Aaa-y-AB)
+                                                          (map vector Baa Baa-y-AB)))]
+                  (assoc t
+                         :Aar Aar
+                         :Aaa Aaa
+                         :Arr Arr
+                         :Baa Baa
+                         :Bar Bar
+                         :Brr Brr
+                         :gp-mean gp-mean-AB
+                         :switching switching
+                         :y {:A y-A :B y-B :AB y-AB}
+                         :G G
+                         :start-t start-t
+                         :end-t end-t)))
+        t-new (map t-mod trials)]
+    (assoc AB :gp-var gp-var :gp-time-scale gp-time-scale :trials t-new)
+    ))
+
+(defn random-state [initial-state]
+  (let [A (randomize-single-trials (:A initial-state))
+        B (randomize-single-trials (:B initial-state))
+        AB (randomize-dual-trials A B (:AB initial-state))]
+    {:A A :B B :AB AB}))
 
 (defn generate-dual-trials [num-trials gp-var gp-time-scale switching-prob A B]
   (let [{F-A :F gp-mean-A :gp-mean max-intensity :max-intensity} A
@@ -197,7 +309,7 @@
         update-ys (partial update-dual-ys m-A m-B)
         update-trial (comp update-ys update-times)
         ]
-    (assoc-in state [:AB :trials] (map update-trial trials))))
+    (assoc-in state [:AB :trials] (pmap update-trial trials))))
 
 (defn dual-log-likelihood
   [gp-var gp-time-scale trial]
@@ -236,7 +348,7 @@
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
          trials :trials} (:AB state)]
-    (assoc-in state [:AB :trials] (map (partial dual-switching gp-var gp-time-scale) trials))))
+    (assoc-in state [:AB :trials] (pmap (partial dual-switching gp-var gp-time-scale) trials))))
 
 (defn update-dual-gp-time-scale [state]
   (let [{gp-var :gp-var
@@ -246,7 +358,7 @@
         conditional (fn [x]
                       (+ (logprior-gp-time-scale x)
                          (reduce + 0
-                                 (map (partial dual-log-likelihood gp-var x) active-trials))))]
+                                 (pmap (partial dual-log-likelihood gp-var x) active-trials))))]
     (assoc-in state [:AB :gp-time-scale] (sample-slice conditional 1 gp-time-scale))))
 
 (defn update-dual-gp-var [state]
@@ -257,10 +369,10 @@
         conditional (fn [x]
                       (+ (logprior-gp-var x)
                          (reduce + 0
-                                 (map (partial dual-log-likelihood x gp-time-scale) active-trials))))]
+                                 (pmap (partial dual-log-likelihood x gp-time-scale) active-trials))))]
     (assoc-in state [:AB :gp-var] (sample-slice conditional 1 gp-var))))
 
-(def s2-P 3)
+(def s2-P 1)
 
 (defn dual-gp-mean [gp-var gp-time-scale trial]
   (if (= (:switching trial) 1)
@@ -288,7 +400,7 @@
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
          trials :trials} (:AB state)]
-    (assoc-in state [:AB :trials] (map (partial dual-gp-mean gp-var gp-time-scale) trials))))
+    (assoc-in state [:AB :trials] (pmap (partial dual-gp-mean gp-var gp-time-scale) trials))))
 
 (defn dual-G [gp-var gp-time-scale trial]
   (let [{switching :switching} trial]
@@ -306,7 +418,7 @@
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
          trials :trials} (:AB state)]
-    (assoc-in state [:AB :trials] (map (partial dual-G gp-var gp-time-scale) trials))))
+    (assoc-in state [:AB :trials] (pmap (partial dual-G gp-var gp-time-scale) trials))))
 
 (defn update-single-ys [gp-mean f trial]
   (let [{obs-times :obs-times
@@ -399,13 +511,24 @@
                  )
   )
 
-(def Atrials (generate-single-trials 15 0 5 0.1 100))
-(def Btrials (generate-single-trials 15 0 5 0.1 100))
+(def Atrials (generate-single-trials 7 0 5 0.1 100))
+(def Btrials (generate-single-trials 7 0 5 0.1 100))
 (def ABtrials (generate-dual-trials 15 5 0.1 0.5 Atrials Btrials))
 
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
-(def iterates (doall (take 500 mcmc)))
+(def mcmc (iterate transition (random-state initial-state)))
+(def iterates (doall (take 400 (take-nth 5 (drop 100 mcmc)))))
+(def iterates 1)
+(def mcmc 1)
+(System/gc)
+
+(write-str initial-state)
+(write-str  (into {} (:A initial-state)))
+(spit "test-data.txt" initial-state)
+(slurp "test-data.txt")
+(type Atrials)
+(use 'clojure.data.json)
 
 (defn plot-intensity
   ([typ iterates]
@@ -467,36 +590,18 @@
     {:intensity-A intensity-A :intensity-B intensity-B}
     ))
 
-(defn plot-dual [i iterates truth]
-  (let [g-AB (map #(comp first (:G (nth (get-in % [:AB :trials]) i))) iterates)
-        true-gp-mean-AB (:gp-mean (nth (get-in truth [:AB :trials]) i))
-        gp-mean-AB (map #(:gp-mean (nth (get-in % [:AB :trials]) i)) iterates)
-        switching (map #(:switching (nth (get-in % [:AB :trials]) i)) iterates)
-        switch-prob (mean switching)
-        switch-trace (plot/list-plot switching :joined true)
-        switch-plot (plot/bar-chart ["Switching" "Non Switching"] [switch-prob (- 1 switch-prob)])
-        mean-histogram (plot/histogram gp-mean-AB :bins 30)
-        mean-traceplot (plot/list-plot gp-mean-AB :joined true)
-        g-plot (plot-gp-dual g-AB i truth)
-        intensity-plot (plot-intensity-dual i iterates truth gp-mean-AB g-AB)
-        ]
-    [true-gp-mean-AB mean-histogram mean-traceplot switch-trace switch-plot g-plot intensity-plot]))
-
-(defn plot-duals [iterates truth]
-  (map #(plot-dual % iterates truth) (range 0 (count (:trials ABtrials)))))
-
 (defn plot-gp-dual
   ([g-AB]
    (let [[lower-g upper-g] (quartile-functions g-AB)
          g-plot (plot/compose (plot/plot upper-g [0 1] :plot-range [[0 1] [-4 4]] :colour "skyblue")
-                               (plot/plot lower-g [0 1] :colour "skyblue"))]
+                              (plot/plot lower-g [0 1] :colour "skyblue"))]
      g-plot))
   ([g-AB i truth]
    (let [g-true (comp first (:G (nth (get-in truth [:AB :trials]) i)))]
      (plot/compose
       (plot/plot g-true [0 1] :plot-range [[0 1] [-4 4]] :colour "#FA8072")
       (plot-gp-dual g-AB)))
-     ))
+   ))
 
 (defn get-truth [i truth]
   (let [max-intensity (get-in truth [:A :max-intensity])
@@ -533,6 +638,27 @@
       (plot/plot intensity-AB [0 1] :plot-range [[0 1] [0 100]] :colour "#FA8072")
       (plot-intensity-dual i iterates gp-mean-AB g-AB)))
    ))
+
+
+(defn plot-dual [i iterates truth]
+  (let [g-AB (map #(comp first (:G (nth (get-in % [:AB :trials]) i))) iterates)
+        true-gp-mean-AB (:gp-mean (nth (get-in truth [:AB :trials]) i))
+        gp-mean-AB (map #(:gp-mean (nth (get-in % [:AB :trials]) i)) iterates)
+        switching (map #(:switching (nth (get-in % [:AB :trials]) i)) iterates)
+        switch-prob (mean switching)
+        switch-trace (plot/list-plot switching :joined true)
+        switch-plot (plot/bar-chart ["Switching" "Non Switching"] [switch-prob (- 1 switch-prob)])
+        mean-histogram (plot/histogram gp-mean-AB :bins 30)
+        mean-traceplot (plot/list-plot gp-mean-AB :joined true)
+        g-plot (plot-gp-dual g-AB i truth)
+        intensity-plot (plot-intensity-dual i iterates truth gp-mean-AB g-AB)
+        ]
+    [true-gp-mean-AB mean-histogram mean-traceplot switch-trace switch-plot g-plot intensity-plot]))
+
+(defn plot-duals [iterates truth]
+  (map #(plot-dual % iterates truth) (range 0 (count (:trials ABtrials)))))
+
+
 
 
 
