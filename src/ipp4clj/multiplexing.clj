@@ -5,22 +5,18 @@
             [ssm4clj.core :refer :all]
             [ssm4clj.misc :refer :all]
             [ipp4clj.misc :refer :all]
+            [distributions.core :as d]
             [gorilla-plot.core :as plot]))
-
-(defn quantile-integrate
-  ([f d n]
-   (let [delta (/ 1.0 n)
-         grid (map (icdf d) (range delta 1 delta))
-         f_i (map f grid)]
-     (/ (reduce + 0 f_i) n))))
 
 (defn sample-bool [p] (< (rand) p))
 (defn sample-bernoulli [p] (if (sample-bool p) 1 0))
 (defn zero-fn [x] 0.0)
 (defn zero-3fn [x] (matrix [0.0 0.0 0.0]))
 (defn group-bool [pred coll]
-  (let [bool-map (group-by pred coll)]
-    [(get bool-map true) (get bool-map false)]))
+  (let [bool-map (group-by pred coll)
+        trues (get bool-map true)
+        falses (get bool-map false)]
+    [trues (if (nil? falses) [] falses)]))
 
 (defn randomize-single-trials [C]
   (let [{max-intensity :max-intensity
@@ -50,8 +46,8 @@
 
 
 (defn generate-single-trials [num-trials gp-mean gp-var gp-time-scale max-intensity]
-  (let [;F (sample-gp {} gp-var gp-time-scale)
-        F (fn [x] [2 2 2])
+  (let [F (sample-gp {} gp-var gp-time-scale)
+        ;F (fn [x] [-2.5 -2.5 -2.5])
         f (comp first F)
         intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)
         thin-intensity (fn [x] (- max-intensity (intensity x)))]
@@ -239,6 +235,39 @@
 (defn logprior-gp-time-scale [x] (ulogpdf-gamma 3 20 x))
 (defn logprior-gp-var [x] (ulogpdf-gamma 10 4 x))
 
+(defn update-dual-ys-pg [m-A m-B trial]
+  (let [{Aar :Aar
+         Arr :Arr
+         Bar :Bar
+         Brr :Brr
+         Baa :Baa
+         Aaa :Aaa
+         gp-mean-AB :gp-mean
+         G :G} trial
+        g (comp first G)
+        m-AB (comp (partial + gp-mean-AB) g)
+        Aar-y-A (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ 0.5 w) w])) Aar)
+        Aar-y-AB (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ -0.5 w) w])) Aar)
+        Arr-y-A (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ -0.5 w) w])) Arr)
+        Bar-y-B (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ 0.5 w) w])) Bar)
+        Bar-y-AB (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ 0.5 w) w])) Bar)
+        Brr-y-B (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ -0.5 w) w])) Brr)
+        Aaa-y-A (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ 0.5 w) w])) Aaa)
+        Aaa-y-AB (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ 0.5 w) w])) Aaa)
+        Baa-y-B (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ 0.5 w) w])) Baa)
+        Baa-y-AB (map (fn [t] (let [w (rpg 1 (m-AB t))] [(/ -0.5 w) w])) Baa)
+        y-A (into (avl/sorted-map) (concat (map vector Aar Aar-y-A)
+                                           (map vector Arr Arr-y-A)
+                                           (map vector Aaa Aaa-y-A)))
+        y-B (into (avl/sorted-map) (concat (map vector Bar Bar-y-B)
+                                           (map vector Brr Brr-y-B)
+                                           (map vector Baa Baa-y-B)))
+        y-AB (into (avl/sorted-map) (concat (map vector Aar Aar-y-AB)
+                                            (map vector Bar Bar-y-AB)
+                                            (map vector Aaa Aaa-y-AB)
+                                            (map vector Baa Baa-y-AB)))]
+    (assoc trial :y {:A y-A :B y-B :AB y-AB})))
+
 (defn update-dual-ys [m-A m-B trial]
   (let [{Aar :Aar
          Arr :Arr
@@ -321,17 +350,39 @@
         ]
     (log-likelihood times centered-obs 1 gp-var gp-time-scale)))
 
+(def s2-P 1)
+
 (defn switch-log-likelihood
   [switching gp-var gp-time-scale trial]
- (let [y (get-in trial [:y :AB])
-       times (keys y)
-       obs (vals y)
-       {gp-mean :gp-mean} trial
-       centered-obs (map (fn [x] (- x gp-mean)) obs)
-       ]
-   (if (= switching 1)
-     (log-likelihood times centered-obs 1 gp-var gp-time-scale)
-     (reduce + 0 (map logpdf-normal obs (repeat gp-mean) (repeat 1.0))))))
+  (let [y (get-in trial [:y :AB])
+        times (keys y)
+        obs (vals y)
+        {gp-mean :gp-mean} trial
+        ]
+    (if (= switching 1)
+      (log-likelihood times (map (fn [x] (- x gp-mean)) obs) 1 gp-var gp-time-scale)
+      (reduce + 0 (map logpdf-normal obs (repeat gp-mean) (repeat 1.0))))))
+
+(defn switch-log-likelihood
+  [switching gp-var gp-time-scale trial]
+  (let [y (get-in trial [:y :AB])
+        times (keys y)
+        obs (vals y)
+        {gp-mean :gp-mean} trial
+        ]
+    (if (= switching 1)
+      (log-likelihood times (map (fn [x] (- x gp-mean)) obs) 1 gp-var gp-time-scale)
+      (log-likelihood times (map (fn [x] (- x gp-mean)) obs) 1 (* 0.2 gp-var) gp-time-scale))))
+
+(defn switch-log-likelihood
+  [switching gp-var gp-time-scale trial]
+  (let [y (get-in trial [:y :AB])
+        times (keys y)
+        obs (vals y)
+        ]
+    (if (= switching 1)
+      (log (d/quantile-integrate (comp exp (fn [mu] (log-likelihood times (map (fn [x] (- x mu)) obs) 1 gp-var gp-time-scale))) (d/normal 0 s2-P) 20))
+      (log (d/quantile-integrate (comp exp (fn [mu] (reduce + 0 (map logpdf-normal obs (repeat mu) (repeat 1.0))))) (d/normal 0 s2-P) 20)))))
 
 (defn switch-probability [gp-var gp-time-scale trial]
   (let [on (switch-log-likelihood 1 gp-var gp-time-scale trial)
@@ -372,7 +423,6 @@
                                  (pmap (partial dual-log-likelihood x gp-time-scale) active-trials))))]
     (assoc-in state [:AB :gp-var] (sample-slice conditional 1 gp-var))))
 
-(def s2-P 1)
 
 (defn dual-gp-mean [gp-var gp-time-scale trial]
   (if (= (:switching trial) 1)
@@ -499,36 +549,29 @@
 
 (def transition (comp
                  update-dual-G
-                 update-dual-switching
-                 update-dual-gp-time-scale
-                 update-dual-gp-var
+;                 update-dual-gp-time-scale
+;                 update-dual-gp-var
                  update-dual-gp-mean
+                 update-dual-switching
                  update-dual-trials
-                 (partial update-single-intensity :B)
-                 (partial update-single-trials :B)
-                 (partial update-single-intensity :A)
-                 (partial update-single-trials :A)
+;                 (partial update-single-intensity :B)
+;                 (partial update-single-trials :B)
+;                 (partial update-single-intensity :A)
+;                 (partial update-single-trials :A)
                  )
   )
 
-(def Atrials (generate-single-trials 7 0 5 0.1 100))
-(def Btrials (generate-single-trials 7 0 5 0.1 100))
+(def Atrials (generate-single-trials 7 1 0.1 0.1 100))
+(def Btrials (generate-single-trials 7 -1 0.1 0.1 100))
 (def ABtrials (generate-dual-trials 15 5 0.1 0.5 Atrials Btrials))
-
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
-(def mcmc (iterate transition (random-state initial-state)))
-(def iterates (doall (take 400 (take-nth 5 (drop 100 mcmc)))))
+;(def mcmc (iterate transition (random-state initial-state)))
+(def iterates (doall (take 200 (take-nth 5 (drop 1 mcmc)))))
 (def iterates 1)
 (def mcmc 1)
 (System/gc)
 
-(write-str initial-state)
-(write-str  (into {} (:A initial-state)))
-(spit "test-data.txt" initial-state)
-(slurp "test-data.txt")
-(type Atrials)
-(use 'clojure.data.json)
 
 (defn plot-intensity
   ([typ iterates]
@@ -723,21 +766,192 @@
     :columns 
   ["Paramter" "Description" "Posterior Summary" "TracePlot"]) )
 
-(:gp-mean (first (:trials (:AB (last iterates)))))
-(def G (sample-gp 1 0.1))
-(def g (comp first G))
-(def grid (sort (sample-beta 1500 :alpha 1 :beta 1)))
-(map #(+ (g %)  (sample-normal 1)) grid)
-(def Atrials (generate-single-trials 15 0 2 1 100))
-(def Btrials (generate-single-trials 15 0 2 1 100))
-(def ABtrials (generate-dual-trials 15 2 1 0.5 Atrials Btrials))
-
-
-(def test-trial (second (:trials ABtrials)))
-(switch-log-likelihood )
-(def test-y (:AB (:y test-trial)))
-(def test-times)
-(map #(switch-probability 2 % (second (:trials ABtrials))) (range 0.1 10 0.1))
+(def gp-var (:gp-var ABtrials))
+(def gp-time-scale (:gp-time-scale ABtrials))
+(def m-A (fn [x] (+ (:gp-mean Atrials) (first ((:F Atrials) x)))))
+(def m-B (fn [x] (+ (:gp-mean Btrials) (first ((:F Btrials) x)))))
+(def intensity-A (fn [x] (* 100 (probit (m-A x)))))
+(def intensity-B (fn [x] (* 100 (probit (m-B x)))))
 (require '[ssm4clj.gp :refer :all])
-(log-likelihood)
-(trusted-log-likelihood )
+(def update-times (partial update-dual-times intensity-A intensity-B 100))
+(def update-ys (partial update-dual-ys m-A m-B))
+(def update-ys-pg (partial update-dual-ys-pg m-A m-B))
+(def update-G (partial dual-G gp-var gp-time-scale))
+
+(def trial (nth (:trials ABtrials 4)))
+(plot/plot (comp first (:G trial)) [0 1])
+(switch-probability gp-var gp-time-scale trial)
+(def midtrial (assoc trial :switching 0))
+(def newtrial (update-ys (update-times (update-G midtrial))))
+(switch-probability gp-var gp-time-scale newtrial)
+
+(defn rpg
+  ([n b c]
+   (take n (repeatedly #(rpg b c))))
+  ([b c]
+   (/ (reduce + (map (fn [k] (/  (sample-gamma 1 :shape b :scale 1) (+ (square (- k 0.5)) (/ (square c) (* 4 (square Math/PI)))))) (range 1 10000))) (* 2 (square Math/PI)))))
+
+(rpg 100 4 3)
+(sample-gamma :shape 10 :scale 0.3)
+
+(require '[ssm4clj.gp :refer :all])
+(matern)
+(dia)
+(zero-matrix 2 2)
+(count t)
+(fill (zero-matrix (count t) (count t)) 1)
+
+(:gp-mean trial)
+(d/mvnor)
+
+
+
+
+(def trial (nth (:trials ABtrials) 3))
+(plot/plot (comp first (:G trial)) [0 1])
+(plot/list-plot (:AB (:y trial)))
+(switch-probability gp-var gp-time-scale trial)
+(def midtrial (assoc trial :switching 0))
+(def newtrial (update-ys (update-times (update-G midtrial))))
+(plot/list-plot (:AB (:y newtrial)))
+(switch-probability gp-var gp-time-scale newtrial)
+
+
+(def trial (update-ys-pg (update-times (nth (:trials ABtrials) 3))))
+(plot/plot (comp first (:G trial)) [0 1])
+(def t (keys (:AB (:y trial))))
+(def y (map first (vals (:AB (:y trial)))))
+(def omegas (map second (vals (:AB (:y trial)))))
+(plot/list-plot (map vector t y ))
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (diagonal-matrix (div 1 omegas)))
+(def covmat (add K obsvars))
+(def meanvector (fill (zero-vector (count t)) (:gp-mean trial)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector obsvars) y))
+(def odds (exp (- loglik1 loglik0)))
+(/ odds (+ 1 odds ))
+;(switch-probability gp-var gp-time-scale trial)
+(def midtrial (assoc trial :switching 0))
+(def newtrial (update-ys-pg (update-times (update-G midtrial))))
+(plot/plot (comp first (:G newtrial)) [0 1])
+(def t (keys (:AB (:y newtrial))))
+(def y (map first (vals (:AB (:y newtrial)))))
+(def omegas (map second (vals (:AB (:y newtrial)))))
+(plot/list-plot (map vector t y ))
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (diagonal-matrix (div 1 omegas)))
+(def covmat (add K obsvars))
+(def meanvector (fill (zero-vector (count t)) (:gp-mean newtrial)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector obsvars) y))
+(def odds (exp (- loglik1 loglik0)))
+(/ odds (+ 1 odds ))
+;(plot/list-plot (:AB (:y newtrial)))
+;(switch-probability gp-var gp-time-scale newtrial)
+
+
+
+(def polyahist (take 200 (repeatedly #(do (def trial (update-ys-pg (update-times (nth (:trials ABtrials) 3))))
+
+(def t (keys (:AB (:y trial))))
+(def y (map first (vals (:AB (:y trial)))))
+(def omegas (map second (vals (:AB (:y trial)))))
+
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (diagonal-matrix (div 1 omegas)))
+(def covmat (add K obsvars))
+(def meanvector (fill (zero-vector (count t)) (:gp-mean trial)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector obsvars) y))
+(def odds (exp (- loglik1 loglik0)))
+
+;(switch-probability gp-var gp-time-scale trial)
+(def midtrial (assoc trial :switching 0))
+(def newtrial (update-ys-pg (update-times (update-G midtrial))))
+
+(def t (keys (:AB (:y newtrial))))
+(def y (map first (vals (:AB (:y newtrial)))))
+(def omegas (map second (vals (:AB (:y newtrial)))))
+
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (diagonal-matrix (div 1 omegas)))
+(def covmat (add K obsvars))
+(def meanvector (fill (zero-vector (count t)) (:gp-mean newtrial)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector obsvars) y))
+(def odds (exp (- loglik1 loglik0)))
+(/ odds (+ 1 odds ))))))
+;(plot/list-plot (:AB (:y newtrial)))
+;(switch-probability gp-var gp-time-scale newtrial)
+
+(def probithist (take 200 (repeatedly #(do (def trial (nth (:trials ABtrials) 3))
+                                           (def midtrial (assoc trial :switching 0))
+                                           (def newtrial (update-ys (update-times (update-G midtrial))))
+                                           (switch-probability gp-var gp-time-scale newtrial)))))
+
+
+(def probithist2 (take 200 (repeatedly #(do (def trial (update-ys (update-times (nth (:trials ABtrials) 3))))
+
+(def t (keys (:AB (:y trial))))
+(def y  (vals (:AB (:y trial))))
+
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (identity-matrix (count t)))
+(def covmat (add K obsvars))
+(def meanvector (fill (zero-vector (count t)) (:gp-mean trial)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector obsvars) y))
+(def odds (exp (- loglik1 loglik0)))
+
+;(switch-probability gp-var gp-time-scale trial)
+(def midtrial (assoc trial :switching 0))
+(def newtrial (update-ys (update-times (update-G midtrial))))
+
+(def t (keys (:AB (:y newtrial))))
+(def y (vals (:AB (:y newtrial))))
+
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (identity-matrix (count t)))
+(def covmat (add K obsvars))
+(def meanvector (fill (zero-vector (count t)) (:gp-mean newtrial)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector obsvars) y))
+(def odds (exp (- loglik1 loglik0)))
+(/ odds (+ 1 odds ))))))
+;(plot/list-plot (:AB (:y newtrial)))
+;(switch-probability gp-var gp-time-scale newtrial)
+
+
+(def polyahist2 (take 200 (repeatedly #(do (def trial (update-ys-pg (update-times (nth (:trials ABtrials) 3))))
+
+(def t (keys (:AB (:y trial))))
+(def y (map first (vals (:AB (:y trial)))))
+(def omegas (map second (vals (:AB (:y trial)))))
+
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (diagonal-matrix (div 1 omegas)))
+(def covmat (add K obsvars (fill (zero-matrix (count t) (count t)) (:gp-mean trial))))
+(def meanvector (zero-vector (count t)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector (add obsvars (fill (zero-matrix (count t) (count t)) 1))) y))
+(def odds (exp (- loglik1 loglik0)))
+
+;(switch-probability gp-var gp-time-scale trial)
+(def midtrial (assoc trial :switching 0))
+(def newtrial (update-ys-pg (update-times (update-G midtrial))))
+
+(def t (keys (:AB (:y newtrial))))
+(def y (map first (vals (:AB (:y newtrial)))))
+(def omegas (map second (vals (:AB (:y newtrial)))))
+
+(def K (matern-cov-matrix t (:gp-var ABtrials) (:gp-time-scale ABtrials)))
+(def obsvars (diagonal-matrix (div 1 omegas)))
+(def covmat (add K obsvars (fill (zero-matrix (count t) (count t)) (:gp-mean trial))))
+(def meanvector (zero-vector (count t)))
+(def loglik1 (d/log-pdf (d/mvnormal meanvector covmat) y))
+(def loglik0 (d/log-pdf (d/mvnormal meanvector (add (fill (zero-matrix (count t) (count t)) 1) obsvars)) y))
+(def odds (exp (- loglik1 loglik0)))
+(/ odds (+ 1 odds ))))))
+;(plot/list-plot (:AB (:y newtrial)))
+;(switch-probability gp-var gp-time-scale newtrial)
