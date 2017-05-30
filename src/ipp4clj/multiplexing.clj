@@ -7,6 +7,8 @@
             [ipp4clj.misc :refer :all]
             [distributions.core :as d]))
 
+
+(def link logistic)
 (defn sample-bool [p] (< (rand) p))
 (defn sample-bernoulli [p] (if (sample-bool p) 1 0))
 (defn zero-fn [x] 0.0)
@@ -25,7 +27,7 @@
         gp-time-scale (rand)
         F (sample-gp {} gp-var gp-time-scale)
         f (comp first F)
-        intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)
+        intensity (comp (partial * max-intensity) link (partial + gp-mean ) f)
         thin-intensity (fn [x] (- max-intensity (intensity x)))
         t-mod (fn [t]
                 (let [{obs-times :obs-times} t
@@ -48,7 +50,7 @@
   (let [F (sample-gp {} gp-var gp-time-scale)
         ;F (fn [x] [-2.5 -2.5 -2.5])
         f (comp first F)
-        intensity (comp (partial * max-intensity) probit (partial + gp-mean ) f)
+        intensity (comp (partial * max-intensity) link (partial + gp-mean ) f)
         thin-intensity (fn [x] (- max-intensity (intensity x)))]
     {:F F :gp-mean gp-mean :gp-var gp-var :gp-time-scale gp-time-scale :max-intensity max-intensity
      :trials
@@ -57,8 +59,10 @@
       (repeatedly (fn []
                     (let [obs-times (sample-ppp intensity max-intensity 0 1)
                           aug-times (sample-ppp thin-intensity max-intensity 0 1)
-                          obs-y (map (fn [t] (sample-right-normal (+ gp-mean (f t)) 1 )) obs-times)
-                          aug-y (map (fn [t] (sample-left-normal (+ gp-mean (f t)) 1 )) aug-times)
+                          ;obs-y (map (fn [t] (sample-right-normal (+ gp-mean (f t)) 1 )) obs-times)
+                          ;aug-y (map (fn [t] (sample-left-normal (+ gp-mean (f t)) 1 )) aug-times)
+                          obs-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ 0.5 w) (/ 1 w)])) obs-times)
+                          aug-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ -0.5 w) (/ 1 w)])) aug-times)
                           obs-map (into (avl/sorted-map) (map vector obs-times obs-y))
                           aug-map (into (avl/sorted-map) (map vector aug-times aug-y))]
                         {:obs-times obs-times
@@ -85,10 +89,10 @@
         {F-B :F gp-mean-B :gp-mean max-intensity :max-intensity} B
         f-A (comp first F-A)
         m-A (comp (partial + gp-mean-A) f-A)
-        intensity-A (comp (partial * max-intensity) probit m-A)
+        intensity-A (comp (partial * max-intensity) link m-A)
         f-B (comp first F-B)
         m-B (comp (partial + gp-mean-B ) f-B)
-        intensity-B (comp (partial * max-intensity) probit m-B)
+        intensity-B (comp (partial * max-intensity) link m-B)
         gp-time-scale (rand)
         gp-var (rand)
         {trials :trials} AB
@@ -98,7 +102,7 @@
                       G (if (= switching 1) (sample-gp {} gp-var gp-time-scale) zero-3fn)
                       g (comp first G)
                       gp-mean-AB (sample-normal 1)
-                      alpha (comp probit (partial + gp-mean-AB) g)
+                      alpha (comp link (partial + gp-mean-AB) g)
                       [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
                                                              alpha
                                                              intensity-A
@@ -162,10 +166,10 @@
         {F-B :F gp-mean-B :gp-mean max-intensity :max-intensity} B
         f-A (comp first F-A)
         m-A (comp (partial + gp-mean-A) f-A)
-        intensity-A (comp (partial * max-intensity) probit m-A)
+        intensity-A (comp (partial * max-intensity) link m-A)
         f-B (comp first F-B)
         m-B (comp (partial + gp-mean-B ) f-B)
-        intensity-B (comp (partial * max-intensity) probit m-B)]
+        intensity-B (comp (partial * max-intensity) link m-B)]
     {:gp-var gp-var :gp-time-scale gp-time-scale
      :trials (take
               num-trials
@@ -176,7 +180,7 @@
                             G (if (= switching 1) (sample-gp {} gp-var gp-time-scale) zero-3fn)
                             g (comp first G)
                             gp-mean-AB (sample-normal 1)
-                            alpha (comp probit (partial + gp-mean-AB) g)
+                            alpha (comp link (partial + gp-mean-AB) g)
                             [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
                                                                    alpha
                                                                    intensity-A
@@ -192,16 +196,26 @@
                             Brr (sample-ppp i-Brr max-intensity start-t end-t)
                             obs-times (concat Aaa Baa)
                             m-AB (comp (partial + gp-mean-AB) g)
-                            Aar-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aar)
-                            Aar-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Aar)
-                            Arr-y-A (map (fn [t] (sample-left-normal (m-A t) 1 )) Arr)
-                            Bar-y-B (map (fn [t] (sample-right-normal (m-B t) 1 )) Bar)
-                            Bar-y-AB (map (fn [t] (sample-right-normal (m-AB t) 1 )) Bar)
-                            Brr-y-B (map (fn [t] (sample-left-normal (m-B t) 1 )) Brr)
-                            Aaa-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aaa)
-                            Aaa-y-AB (map (fn [t] (sample-right-normal (m-AB t) 1 )) Aaa)
-                            Baa-y-B (map (fn [t] (sample-right-normal (m-B t) 1 )) Baa)
-                            Baa-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Baa)
+                            ;Aar-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aar)
+                            ;Aar-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Aar)
+                            ;Arr-y-A (map (fn [t] (sample-left-normal (m-A t) 1 )) Arr)
+                            ;Bar-y-B (map (fn [t] (sample-right-normal (m-B t) 1 )) Bar)
+                            ;Bar-y-AB (map (fn [t] (sample-right-normal (m-AB t) 1 )) Bar)
+                            ;Brr-y-B (map (fn [t] (sample-left-normal (m-B t) 1 )) Brr)
+                            ;Aaa-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aaa)
+                            ;Aaa-y-AB (map (fn [t] (sample-right-normal (m-AB t) 1 )) Aaa)
+                            ;Baa-y-B (map (fn [t] (sample-right-normal (m-B t) 1 )) Baa)
+                            ;Baa-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Baa)
+                            Aar-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Aar)
+                            Aar-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Aar)
+                            Arr-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Arr)
+                            Bar-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Bar)
+                            Bar-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Bar)
+                            Brr-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Brr)
+                            Aaa-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Aaa)
+                            Aaa-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Aaa)
+                            Baa-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Baa)
+                            Baa-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Baa)
                             y-A (into (avl/sorted-map) (concat (map vector Aar Aar-y-A)
                                                                (map vector Arr Arr-y-A)
                                                                (map vector Aaa Aaa-y-A)))
@@ -232,7 +246,7 @@
      Double/NEGATIVE_INFINITY
      (- (* (dec a) (log x)) (* b x))))
 (defn logprior-gp-time-scale [x] (ulogpdf-gamma 3 20 x))
-(defn logprior-gp-var [x] (ulogpdf-gamma 10 4 x))
+(defn logprior-gp-var [x] (ulogpdf-gamma 10 2 x))
 
 
 (defn update-dual-ys [m-A m-B trial]
@@ -246,16 +260,16 @@
          G :G} trial
         g (comp first G)
         m-AB (comp (partial + gp-mean-AB) g)
-        Aar-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) w])) Aar)
-        Aar-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) w])) Aar)
-        Arr-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) w])) Arr)
-        Bar-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) w])) Bar)
-        Bar-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) w])) Bar)
-        Brr-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) w])) Brr)
-        Aaa-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) w])) Aaa)
-        Aaa-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) w])) Aaa)
-        Baa-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) w])) Baa)
-        Baa-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) w])) Baa)
+        Aar-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Aar)
+        Aar-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Aar)
+        Arr-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Arr)
+        Bar-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Bar)
+        Bar-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Bar)
+        Brr-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Brr)
+        Aaa-y-A (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Aaa)
+        Aaa-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Aaa)
+        Baa-y-B (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ 0.5 w) (/ 1 w)])) Baa)
+        Baa-y-AB (map (fn [t] (let [w (d/sample (d/polya-gamma (m-AB t)))] [(/ -0.5 w) (/ 1 w)])) Baa)
         y-A (into (avl/sorted-map) (concat (map vector Aar Aar-y-A)
                                            (map vector Arr Arr-y-A)
                                            (map vector Aaa Aaa-y-A)))
@@ -268,7 +282,7 @@
                                             (map vector Baa Baa-y-AB)))]
     (assoc trial :y {:A y-A :B y-B :AB y-AB})))
 
-(defn update-dual-ys-probit [m-A m-B trial]
+(defn update-dual-ys-link [m-A m-B trial]
   (let [{Aar :Aar
          Arr :Arr
          Bar :Bar
@@ -308,7 +322,7 @@
          G :G
          gp-mean :gp-mean
          obs-times :obs-times} trial
-        alpha (comp probit (partial + gp-mean) first G)
+        alpha (comp link (partial + gp-mean) first G)
         [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
                                                alpha
                                                intensity-A
@@ -329,10 +343,10 @@
         {F-B :F gp-mean-B :gp-mean max-intensity :max-intensity} (:B state)
         f-A (comp first F-A)
         m-A (comp (partial + gp-mean-A ) f-A)
-        intensity-A (comp (partial * max-intensity) probit m-A)
+        intensity-A (comp (partial * max-intensity) link m-A)
         f-B (comp first F-B)
         m-B (comp (partial + gp-mean-B ) f-B)
-        intensity-B (comp (partial * max-intensity) probit m-B)
+        intensity-B (comp (partial * max-intensity) link m-B)
         {trials :trials} (:AB state)
         update-times (partial update-dual-times intensity-A intensity-B max-intensity)
         update-ys (partial update-dual-ys m-A m-B)
@@ -365,6 +379,7 @@
       (log-likelihood times (map (fn [x] (- x gp-mean)) obs) obs-var gp-var gp-time-scale)
       (reduce + 0 (map logpdf-normal obs (repeat gp-mean) obs-var)))))
 
+(comment
 (defn switch-log-likelihood
   [switching gp-var gp-time-scale trial]
   (let [y (get-in trial [:y :AB])
@@ -377,7 +392,6 @@
       (log-likelihood times (map (fn [x] (- x gp-mean)) obs) obs-var gp-var gp-time-scale)
       (log-likelihood times (map (fn [x] (- x gp-mean)) obs) obs-var (* 0.2 gp-var) gp-time-scale))))
 
-(comment
   (defn switch-log-likelihood
     [switching gp-var gp-time-scale trial]
     (let [y (get-in trial [:y :AB])
@@ -483,8 +497,8 @@
          aug-times :aug-times} trial
         ;obs-y (map (fn [t] (sample-right-normal (+ gp-mean (f t)) 1 )) obs-times)
         ;aug-y (map (fn [t] (sample-left-normal (+ gp-mean (f t)) 1 )) aug-times)
-        obs-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ 0.5 w) w])) obs-times)
-        aug-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ -0.5 w) w])) aug-times)
+        obs-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ 0.5 w) (/ 1 w)])) obs-times)
+        aug-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ -0.5 w) (/ 1 w)])) aug-times)
         obs-map (into (avl/sorted-map) (map vector obs-times obs-y))
         aug-map (into (avl/sorted-map) (map vector aug-times aug-y))]
     (assoc trial :y (merge obs-map aug-map))))
@@ -500,7 +514,7 @@
          gp-mean :gp-mean
          trials :trials} (typ state)
         f (comp first F)
-        intensity (comp (partial * max-intensity) probit (partial + gp-mean) f)
+        intensity (comp (partial * max-intensity) link (partial + gp-mean) f)
         thin-intensity (fn [x] (- max-intensity (intensity x)))
         update-ys (partial update-single-ys gp-mean f)
         update-single-times (partial update-single-times thin-intensity max-intensity)
@@ -555,39 +569,36 @@
         update (comp update-F
                      update-gp-var
                      update-gp-time-scale
-                     update-gp-mean)]
+                     update-gp-mean
+                     )]
     (update state)))
 
 
 (def transition (comp
-;                 (partial update-single-intensity :B)
- ;                (partial update-single-trials :B)
-;                 (partial update-single-intensity :A)
- ;                (partial update-single-trials :A)
+                 (partial update-single-intensity :B)
+                 (partial update-single-trials :B)
+                 (partial update-single-intensity :A)
+                (partial update-single-trials :A)
                  update-dual-G
-                 update-dual-gp-time-scale
+                update-dual-gp-time-scale
                  update-dual-gp-var
-                 update-dual-gp-mean
-                 update-dual-switching
+                update-dual-gp-mean
+                update-dual-switching
                  update-dual-trials
                  )
   )
 
-(def Atrials (generate-single-trials 7 1 0.1 0.1 100))
-(def Btrials (generate-single-trials 7 -1 0.1 0.1 100))
-(def ABtrials (generate-dual-trials 15 5 0.1 0.5 Atrials Btrials))
+(def Atrials (generate-single-trials 5 2.5 0.1 0.1 100))
+(def Btrials (generate-single-trials 5 -2.5 0.1 0.1 100))
+(def ABtrials (generate-dual-trials 5 5 0.1 0.5 Atrials Btrials))
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
-(def foo (take 2 mcmc))
-(last foo)
-(update-single-intensity :A (last foo))
 ;(def mcmc (iterate transition (random-state initial-state)))
 
-(def iterates (doall (take 200 (take-nth 5 (drop 1 mcmc)))))
+(def iterates (doall (take 600 (take-nth 1 (drop 5 mcmc)))))
 (def iterates 1)
 (def mcmc 1)
 (System/gc)
-
 (+ 1 2)
 (:y (keys (first (:trials ABtrials))))
 (:A (:y (update-dual-ys-pg (fn [x] 0) (fn [x] 0) (first (:trials ABtrials)))))
@@ -595,15 +606,15 @@
 (defn plot-intensity
   ([typ iterates]
    (let[
-        ;mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
-        lower-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.025))
-        upper-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.975))
+        ;mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (link (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
+        lower-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (link (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.025))
+        upper-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (link (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.975))
         ]
      (plot/compose (plot/plot upper-function [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue")
                    (plot/plot lower-function [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue"))
      ))
   ([typ iterates truth]
-   (let [true-function (fn [x] (* (:max-intensity truth) (probit (+ (:gp-mean truth) ((comp first (:F truth)) x)))))]
+   (let [true-function (fn [x] (* (:max-intensity truth) (link (+ (:gp-mean truth) ((comp first (:F truth)) x)))))]
      (plot/compose
       (plot-intensity typ iterates)
       (plot/plot true-function [0 1] :plot-range [[0 1] [0 100]] :colour "#FA8072"))
@@ -613,7 +624,7 @@
 (defn plot-gp
   ([typ iterates]
    (let[
-        ;mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (probit (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
+        ;mean-function (fn [x] (mean (map (fn [y] (* (:max-intensity y) (link (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates))))
         lower-function (fn [x] (quantile (map (fn [y] (first ((:F y) x))) (map typ iterates)) :probs 0.025))
         upper-function (fn [x] (quantile (map (fn [y] (first ((:F y) x))) (map typ iterates)) :probs 0.975))
         ]
@@ -647,8 +658,8 @@
         gp-mean-A (map #(get-in % [:A :gp-mean]) iterates)
         f-B (map #(comp first (get-in % [:B :F])) iterates)
         gp-mean-B (map #(get-in % [:B :gp-mean]) iterates)
-        intensity-A (map (fn [Lambda gp-mean f] (fn [t] (* Lambda (probit (+ gp-mean (f t)))))) max-intensity gp-mean-A f-A)
-        intensity-B (map (fn [Lambda gp-mean f] (fn [t] (* Lambda (probit (+ gp-mean (f t)))))) max-intensity gp-mean-B f-B)]
+        intensity-A (map (fn [Lambda gp-mean f] (fn [t] (* Lambda (link (+ gp-mean (f t)))))) max-intensity gp-mean-A f-A)
+        intensity-B (map (fn [Lambda gp-mean f] (fn [t] (* Lambda (link (+ gp-mean (f t)))))) max-intensity gp-mean-B f-B)]
     {:intensity-A intensity-A :intensity-B intensity-B}
     ))
 
@@ -673,9 +684,9 @@
         gp-mean-B (get-in truth [:B :gp-mean])
         g-AB (comp first (:G (nth (get-in truth [:AB :trials]) i)))
         gp-mean-AB (:gp-mean (nth (get-in truth [:AB :trials]) i))
-        intensity-A (fn [t] (* max-intensity (probit (+ gp-mean-A (f-A t)))))
-        intensity-B (fn [t] (* max-intensity (probit (+ gp-mean-B (f-B t)))))
-        alpha (fn [t] (probit (+ gp-mean-AB (g-AB t))))
+        intensity-A (fn [t] (* max-intensity (link (+ gp-mean-A (f-A t)))))
+        intensity-B (fn [t] (* max-intensity (link (+ gp-mean-B (f-B t)))))
+        alpha (fn [t] (link (+ gp-mean-AB (g-AB t))))
         intensity-AB (fn [t] (+ (* (alpha t) (intensity-A t))
                                 (* (- 1 (alpha t)) (intensity-B t))))]
     {:intensity-AB intensity-AB
@@ -686,7 +697,7 @@
   ([i iterates gp-mean-AB g-AB]
    (let [{intensity-A :intensity-A
           intensity-B :intensity-B} (extract-params iterates)
-         alpha (map (fn [gp-mean g] (fn [t] (probit (+ gp-mean (g t))))) gp-mean-AB g-AB)
+         alpha (map (fn [gp-mean g] (fn [t] (link (+ gp-mean (g t))))) gp-mean-AB g-AB)
          intensity-AB (map (fn [in-A in-B a]
                              (fn [t] (+ (* (a t) (in-A t))
                                         (* (- 1 (a t)) (in-B t))))) intensity-A intensity-B alpha)
@@ -730,6 +741,8 @@
                    (map #(:G (nth (get-in % [:AB :trials]) i)) iterates))]
     (map plot-gp-dual Gstreams true-Gs)))
 
+(use '[gorilla-repl latex table])
+(use 'gorilla-renderable.core)
 
 (defn summarize [iterates]
  (table-view 
@@ -789,8 +802,8 @@
 (def gp-time-scale (:gp-time-scale ABtrials))
 (def m-A (fn [x] (+ (:gp-mean Atrials) (first ((:F Atrials) x)))))
 (def m-B (fn [x] (+ (:gp-mean Btrials) (first ((:F Btrials) x)))))
-(def intensity-A (fn [x] (* 100 (probit (m-A x)))))
-(def intensity-B (fn [x] (* 100 (probit (m-B x)))))
+(def intensity-A (fn [x] (* 100 (link (m-A x)))))
+(def intensity-B (fn [x] (* 100 (link (m-B x)))))
 (require '[ssm4clj.gp :refer :all])
 (def update-times (partial update-dual-times intensity-A intensity-B 100))
 (def update-ys (partial update-dual-ys m-A m-B))
@@ -905,13 +918,13 @@
 ;(plot/list-plot (:AB (:y newtrial)))
 ;(switch-probability gp-var gp-time-scale newtrial)
 
-(def probithist (take 200 (repeatedly #(do (def trial (nth (:trials ABtrials) 3))
+(def linkhist (take 200 (repeatedly #(do (def trial (nth (:trials ABtrials) 3))
                                            (def midtrial (assoc trial :switching 0))
                                            (def newtrial (update-ys (update-times (update-G midtrial))))
                                            (switch-probability gp-var gp-time-scale newtrial)))))
 
 
-(def probithist2 (take 200 (repeatedly #(do (def trial (update-ys (update-times (nth (:trials ABtrials) 3))))
+(def linkhist2 (take 200 (repeatedly #(do (def trial (update-ys (update-times (nth (:trials ABtrials) 3))))
 
 (def t (keys (:AB (:y trial))))
 (def y  (vals (:AB (:y trial))))

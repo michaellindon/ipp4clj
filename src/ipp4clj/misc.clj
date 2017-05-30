@@ -2,7 +2,6 @@
   (:require [incanter.stats :refer :all]
             [clojure.core.matrix :refer :all]
             [incanter.core :as ic]
-            [incanter.charts :as ip]
             [clojure.core.matrix.linear :as la]
             [clojure.data.avl :as avl]))
 
