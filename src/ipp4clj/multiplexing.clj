@@ -588,20 +588,46 @@
                  )
   )
 
-(def Atrials (generate-single-trials 5 2.5 0.1 0.1 100))
-(def Btrials (generate-single-trials 5 -2.5 0.1 0.1 100))
-(def ABtrials (generate-dual-trials 5 5 0.1 0.5 Atrials Btrials))
+(def Atrials (generate-single-trials 5 2 0.1 0.1 500))
+(def Btrials (generate-single-trials 5 -2 0.1 0.1 500))
+(def ABtrials (generate-dual-trials 10 5 0.1 0.5 Atrials Btrials))
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
 ;(def mcmc (iterate transition (random-state initial-state)))
 
-(def iterates (doall (take 600 (take-nth 1 (drop 5 mcmc)))))
+
+(def iterates (take-thin 1000 10 transition initial-state) )
+(def iterates (take 2 (take-nth 2000 mcmc)))
+(def iterates (take-thin 200 10 mcmc))
+(last iterates)
 (def iterates 1)
 (def mcmc 1)
 (System/gc)
-(+ 1 2)
 (:y (keys (first (:trials ABtrials))))
 (:A (:y (update-dual-ys-pg (fn [x] 0) (fn [x] 0) (first (:trials ABtrials)))))
+(+ 1 2)
+
+(defn strip [coll]
+  (prewalk #(if (map? %) (dissoc % :y :Baa :Bar :Brr :Aaa :Aar :Arr :obs-times :aug-times) %) coll))
+
+(defn take-thin [take thin transition initial-state]
+  (loop [iter 0
+         acc '()
+         acclen 0
+         state initial-state]
+    (if (= take acclen)
+      acc
+      (if (zero? (mod iter thin))
+        (do
+          (println iter)
+          (recur (inc iter) (conj acc (strip state)) (inc acclen) (transition state)))
+        (recur (inc iter) acc acclen (transition state))))))
+
+
+(take-thin 10 15 inc 1)
+(take 10 (take-nth 15 (iterate inc 1)))
+
+
 
 (defn plot-intensity
   ([typ iterates]
@@ -610,14 +636,14 @@
         lower-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (link (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.025))
         upper-function (fn [x] (quantile (map (fn [y] (* (:max-intensity y) (link (+ (:gp-mean y) (first ((:F y) x)))))) (map typ iterates)) :probs 0.975))
         ]
-     (plot/compose (plot/plot upper-function [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue")
-                   (plot/plot lower-function [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue"))
+     (plot/compose (plot/plot upper-function [0 1] :plot-range [[0 1] [0 111]] :colour "skyblue")
+                   (plot/plot lower-function [0 1] :plot-range [[0 1] [0 111]] :colour "skyblue"))
      ))
   ([typ iterates truth]
    (let [true-function (fn [x] (* (:max-intensity truth) (link (+ (:gp-mean truth) ((comp first (:F truth)) x)))))]
      (plot/compose
       (plot-intensity typ iterates)
-      (plot/plot true-function [0 1] :plot-range [[0 1] [0 100]] :colour "#FA8072"))
+      (plot/plot true-function [0 1] :plot-range [[0 1] [0 111]] :colour "#FA8072"))
      )
    ))
 
@@ -702,13 +728,13 @@
                              (fn [t] (+ (* (a t) (in-A t))
                                         (* (- 1 (a t)) (in-B t))))) intensity-A intensity-B alpha)
          [lower-intensity upper-intensity] (quartile-functions intensity-AB)]
-     (plot/compose (plot/plot upper-intensity [0 1] :plot-range [[0 1] [0 100]] :colour "skyblue")
+     (plot/compose (plot/plot upper-intensity [0 1] :plot-range [[0 1] [0 111]] :colour "skyblue")
                    (plot/plot lower-intensity [0 1] :colour "skyblue"))
      ))
   ([i iterates truth gp-mean-AB g-AB]
    (let [{intensity-AB :intensity-AB} (get-truth i truth)]
      (plot/compose
-      (plot/plot intensity-AB [0 1] :plot-range [[0 1] [0 100]] :colour "#FA8072")
+      (plot/plot intensity-AB [0 1] :plot-range [[0 1] [0 111]] :colour "#FA8072")
       (plot-intensity-dual i iterates gp-mean-AB g-AB)))
    ))
 
@@ -827,9 +853,6 @@
 (sample-gamma :shape 10 :scale 0.3)
 
 
-(require '[ssm4clj.gp :refer :all])
-(matern)
-(dia)
 (zero-matrix 2 2)
 (count t)
 (fill (zero-matrix (count t) (count t)) 1)
