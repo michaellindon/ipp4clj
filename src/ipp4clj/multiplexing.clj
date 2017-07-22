@@ -5,11 +5,14 @@
             [ssm4clj.core :refer :all]
             [ssm4clj.misc :refer :all]
             [ipp4clj.misc :refer :all]
+            [clojure.walk :refer :all]
             [distributions.core :as d]
-            [clojure.walk :refer :all]))
+            [clojure.data.json :as json]))
 
 
 (def link logistic)
+(def base-measure (d/normal 0 1))
+(def mean-prior-var-prior (d/inverse-gamma 2 0.1))
 (defn sample-bool [p] (< (rand) p))
 (defn sample-bernoulli [p] (if (sample-bool p) 1 0))
 (defn zero-fn [x] 0.0)
@@ -67,7 +70,7 @@
                           aug-y (map (fn [t] (let [w (d/sample (d/polya-gamma (+ gp-mean (f t))))] [(/ -0.5 w) (/ 1 w)])) aug-times)
                           obs-map (into (avl/sorted-map) (map vector obs-times obs-y))
                           aug-map (into (avl/sorted-map) (map vector aug-times aug-y))]
-                        {:obs-times obs-times
+                        {:obs-times (sort obs-times)
                          :aug-times aug-times
                          :y (merge obs-map aug-map)
                          :start-t 0
@@ -119,7 +122,7 @@
                       Baa (sample-ppp i-Baa max-intensity-B start-t end-t)
                       Bar (sample-ppp i-Bar max-intensity-B start-t end-t)
                       Brr (sample-ppp i-Brr max-intensity-B start-t end-t)
-                      obs-times (concat Aaa Baa)
+                      obs-times (sort (concat Aaa Baa))
                       m-AB (comp (partial + gp-mean-AB) g)
                       Aar-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aar)
                       Aar-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Aar)
@@ -174,8 +177,11 @@
         m-B (comp (partial + gp-mean-B ) f-B)
         intensity-B (comp (partial * max-intensity-B) link m-B)]
     {:gp-var gp-var
+     :concentration 1
+     :switch-p switching-prob
      :gp-time-locations [0.1 0.2 0.3 0.4 0.5]
      :gp-time-probabilities [0.2 0.2 0.2 0.2 0.2]
+     :mean-prior-var 1
      :trials (take
               num-trials
               (repeatedly
@@ -185,7 +191,7 @@
                             gp-time-scale (d/sample (d/uniform 0.1 0.11))
                             G (if (= switching 1) (sample-gp {} gp-var gp-time-scale) zero-3fn)
                             g (comp first G)
-                            gp-mean-AB (sample-normal 1)
+                            gp-mean-AB (d/sample (d/mixture [(d/normal -2 1) (d/normal 2 1)] [0.5 0.5]))
                             alpha (comp link (partial + gp-mean-AB) g)
                             [i-Aaa i-Aar i-Arr i-Baa i-Bar i-Brr] (intensity-functions
                                                                    alpha
@@ -201,7 +207,7 @@
                             Baa (sample-ppp i-Baa max-intensity-B start-t end-t)
                             Bar (sample-ppp i-Bar max-intensity-B start-t end-t)
                             Brr (sample-ppp i-Brr max-intensity-B start-t end-t)
-                            obs-times (concat Aaa Baa)
+                            obs-times (sort (concat Aaa Baa))
                             m-AB (comp (partial + gp-mean-AB) g)
                             ;Aar-y-A (map (fn [t] (sample-right-normal (m-A t) 1 )) Aar)
                             ;Aar-y-AB (map (fn [t] (sample-left-normal (m-AB t) 1 )) Aar)
@@ -242,6 +248,8 @@
                          :Bar Bar
                          :Brr Brr
                          :gp-mean gp-mean-AB
+                         :dp-param gp-mean-AB
+                         :dp-label 1
                          :gp-time-scale gp-time-scale
                          :switching switching
                          :y {:A y-A :B y-B :AB y-AB}
@@ -360,7 +368,7 @@
         update-ys (partial update-dual-ys m-A m-B)
         update-trial (comp update-ys update-times)
         ]
-    (assoc-in state [:AB :trials] (map update-trial trials))))
+    (assoc-in state [:AB :trials] (pmap update-trial trials))))
 
 (defn dual-log-likelihood
   [gp-var gp-time-scale trial]
@@ -374,10 +382,14 @@
         ]
     (log-likelihood times centered-obs obs-var gp-var gp-time-scale)))
 
-(def s2-P 1)
+
+(defn log-sum-exp [coll]
+  (let [a (reduce max coll)
+        expshifted (map (fn [x] (exp (- x a))) coll)]
+    (+ a (log (reduce + expshifted)))))
 
 (defn switch-log-likelihood
-  [switching gp-var trial]
+  [switching gp-var gp-time-locations gp-time-probabilities trial]
   (let [{gp-time-scale :gp-time-scale} trial
         y (get-in trial [:y :AB])
         times (keys y)
@@ -386,10 +398,28 @@
         {gp-mean :gp-mean} trial
         ]
     (if (= switching 1)
-      (log-likelihood times (map (fn [x] (- x gp-mean)) obs) obs-var gp-var gp-time-scale)
+      (let [centered-obs (map (fn [x] (- x gp-mean)) obs)
+            loglik (map (fn [t] (log-likelihood times centered-obs obs-var gp-var t)) gp-time-locations)
+            ;GP TIME LOCATIONS NOT ON LOG SCALE
+            logprob (map log gp-time-probabilities)
+            loglik+logprob (map + loglik logprob)]
+        (log-sum-exp loglik+logprob))
       (reduce + 0 (map logpdf-normal obs (repeat gp-mean) obs-var)))))
 
 (comment
+  (defn switch-log-likelihood
+    [switching gp-var trial]
+    (let [{gp-time-scale :gp-time-scale} trial
+          y (get-in trial [:y :AB])
+          times (keys y)
+          obs (map first (vals y))
+          obs-var (map second (vals y))
+          {gp-mean :gp-mean} trial
+          ]
+      (if (= switching 1)
+        (log-likelihood times (map (fn [x] (- x gp-mean)) obs) obs-var gp-var gp-time-scale)
+        (reduce + 0 (map logpdf-normal obs (repeat gp-mean) obs-var)))))
+
 (defn switch-log-likelihood
   [switching gp-var trial]
   (let [{gp-time-scale :gp-time-scale} trial
@@ -415,23 +445,33 @@
         (log (d/quantile-integrate (comp exp (fn [mu] (log-likelihood times (map (fn [x] (- x mu)) obs) obs-var gp-var gp-time-scale))) (d/normal 0 s2-P) 20))
         (log (d/quantile-integrate (comp exp (fn [mu] (reduce + 0 (map logpdf-normal obs (repeat mu) obs-var)))) (d/normal 0 s2-P) 20))))))
 
-(defn switch-probability [gp-var trial]
+(defn switch-probability [gp-var gp-time-locations gp-time-probabilities switch-p trial]
   (let [{gp-time-scale :gp-time-scale} trial
-        on (switch-log-likelihood 1 gp-var trial)
-        off (switch-log-likelihood 0 gp-var trial)
+        on (+ (log switch-p) (switch-log-likelihood 1 gp-var gp-time-locations gp-time-probabilities trial))
+        off (+ (log (- 1 switch-p)) (switch-log-likelihood 0 gp-var gp-time-locations gp-time-probabilities trial))
         odds (exp (- on off))]
     (/ odds (+ 1 odds))))
 
-(defn dual-switching [gp-var trial]
+(defn dual-switching [gp-var gp-time-locations gp-time-probabilities switch-p trial]
   (let [{gp-time-scale :gp-time-scale} trial
-        switching-probability (switch-probability gp-var trial)
+        switching-probability (switch-probability gp-var gp-time-locations gp-time-probabilities switch-p trial)
         new-switching (if (< (rand) switching-probability) 1 0)]
     (assoc trial :switching new-switching)))
 
+(defn update-dual-switch-probability [state]
+  (let [trials (get-in state [:AB :trials])
+        n (count trials)
+        switchers (reduce + (map :switching trials))
+        newprob (sample-beta 1 :alpha (+ 1 switchers) :beta (+ 1 (- n switchers)))]
+    (assoc-in state [:AB :switch-p] newprob)))
+
 (defn update-dual-switching [state]
   (let [{gp-var :gp-var
-         trials :trials} (:AB state)]
-    (assoc-in state [:AB :trials] (map (partial dual-switching gp-var) trials))))
+         switch-p :switch-p
+         trials :trials
+         gp-time-locations :gp-time-locations
+         gp-time-probabilities :gp-time-probabilities} (:AB state)]
+    (assoc-in state [:AB :trials] (pmap (partial dual-switching gp-var gp-time-locations gp-time-probabilities switch-p) trials))))
 
 (defn gp-time-scale-posterior [loglikelihood locations probabilities]
   (let [
@@ -457,7 +497,7 @@
                                    locations :gp-time-locations
                                    probabilities :gp-time-probabilities
                                    } :AB :as state}]
-  (let [new-trials (map #(dual-gp-time-scale gp-var % locations probabilities) trials)]
+  (let [new-trials (pmap #(dual-gp-time-scale gp-var % locations probabilities) trials)]
     (assoc-in state [:AB :trials] new-trials)))
 
 (defn update-dual-gp-var [state]
@@ -468,11 +508,11 @@
         conditional (fn [x]
                       (+ (logprior-gp-var x)
                          (reduce + 0
-                                 (map (fn [y z] (dual-log-likelihood x y z)) time-scales active-trials))))]
+                                 (pmap (fn [y z] (dual-log-likelihood x y z)) time-scales active-trials))))]
     (assoc-in state [:AB :gp-var] (sample-slice conditional 1 gp-var))))
 
 
-(defn dual-gp-mean [gp-var trial]
+(defn dual-gp-mean [gp-var mean-prior-var trial]
   (if (= (:switching trial) 1)
     (let [{y :AB} (:y trial)
           {gp-time-scale :gp-time-scale} trial
@@ -482,8 +522,9 @@
           mus2 (mean-conditional times obs obs-var gp-var gp-time-scale)
           mu-L (first mus2)
           s2-L (second mus2)
-          posterior-var (/ 1  (+ (/ 1 s2-L) (/ 1 s2-P)))
-          posterior-mean (* posterior-var (/ mu-L s2-L))
+          mu-P (:dp-param trial)
+          posterior-var (/ 1  (+ (/ 1 s2-L) (/ 1 mean-prior-var)))
+          posterior-mean (* posterior-var (+ (/ mu-P mean-prior-var) (/ mu-L s2-L)))
           new-mean (sample-normal 1 :mean posterior-mean :sd (sqrt posterior-var))]
       (assoc trial :gp-mean new-mean))
     (let [{y :AB} (:y trial)
@@ -491,17 +532,19 @@
           obs-var (map second (vals y))
           s2-L (/ 1 (reduce + 0 (div 1 obs-var)))
           mu-L (* s2-L (reduce + 0 (mul obs (div 1 obs-var))))
-          posterior-var (/ 1  (+ (/ 1 s2-L) (/ 1 s2-P)))
-          posterior-mean (* posterior-var (/ mu-L s2-L))
+          mu-P (:dp-param trial)
+          posterior-var (/ 1  (+ (/ 1 s2-L) (/ 1 mean-prior-var)))
+          posterior-mean (* posterior-var (+ (/ mu-P mean-prior-var) (/ mu-L s2-L)))
           new-mean (sample-normal 1 :mean posterior-mean :sd (sqrt posterior-var)) ]
       (assoc trial :gp-mean new-mean))
     ))
 
 (defn update-dual-gp-mean [state]
   (let [{gp-var :gp-var
+         mean-prior-var :mean-prior-var
          gp-time-scale :gp-time-scale
          trials :trials} (:AB state)]
-    (assoc-in state [:AB :trials] (map (partial dual-gp-mean gp-var) trials))))
+    (assoc-in state [:AB :trials] (pmap (partial dual-gp-mean gp-var mean-prior-var) trials))))
 
 (defn dual-G [gp-var trial]
   (let [{switching :switching
@@ -521,7 +564,7 @@
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
          trials :trials} (:AB state)]
-    (assoc-in state [:AB :trials] (map (partial dual-G gp-var gp-time-scale) trials))))
+    (assoc-in state [:AB :trials] (pmap (partial dual-G gp-var) trials))))
 
 (defn update-single-ys [gp-mean f trial]
   (let [{obs-times :obs-times
@@ -604,7 +647,18 @@
                      )]
     (update state)))
 
-(def dirichlet-alpha [1 1 1 1 1])
+(def dirichlet-alpha [0.2 0.2 0.2 0.2 0.2])
+
+(defn update-dp-labels [state]
+  (let [{concentration :concentration
+         mean-prior-var :mean-prior-var
+         trials :trials} (:AB state)
+        labels (map :dp-label trials)
+        observations (map :gp-mean trials)
+        newlabels (d/dp-update-labels observations (d/normal :mu mean-prior-var) base-measure concentration (into [] labels))
+        newparams (d/dp-update-params observations (d/normal :mu mean-prior-var) base-measure concentration newlabels)]
+    (assoc-in state [:AB :trials] (map (fn [x y z] (assoc x :dp-label y :dp-param z)) trials newlabels newparams))
+    ))
 
 (defn update-probabilities [state]
   (let [{probabilities :gp-time-probabilities
@@ -614,23 +668,40 @@
         new-alpha (add n dirichlet-alpha)]
     (assoc-in state [:AB :gp-time-probabilities] (d/sample (d/dirichlet new-alpha)))))
 
+(defn update-mean-prior-var [state]
+  (let [{trials :trials} (:AB state)
+        means (map :gp-mean trials)
+        dp-params (map :dp-param trials)
+        reducer (fn [p [m n]] (d/posterior [m] (d/normal n :s2) p))
+        post (reduce reducer mean-prior-var-prior (map vector means dp-params))]
+    (assoc-in state [:AB :mean-prior-var] (d/sample post))))
+
 (def transition (comp
                  (partial update-single-intensity :B)
                  (partial update-single-trials :B)
                  (partial update-single-intensity :A)
                  (partial update-single-trials :A)
+                 update-dual-switch-probability
+                 update-mean-prior-var
+                 update-dp-labels
                  update-dual-G
                  update-probabilities
-                 update-dual-gp-time-scale
                  update-dual-gp-var
                  update-dual-gp-mean
+                 update-dual-gp-time-scale
                  update-dual-switching
                  update-dual-trials
                  )
   )
 
-(defn strip [coll]
+(defn strip-data [coll]
   (prewalk #(if (map? %) (dissoc % :y :Baa :Bar :Brr :Aaa :Aar :Arr :obs-times :aug-times) %) coll))
+
+(defn strip-intensity [coll]
+  (prewalk #(if (clojure.test/function? %) (map (comp first %) (range 0 1 0.001)) %) coll))
+
+(def strip (comp strip-intensity strip-data))
+(def strip strip-data)
 
 (defn take-thin [take thin transition initial-state]
   (loop [iter 0
@@ -645,18 +716,20 @@
           (recur (inc iter) (conj acc (strip state)) (inc acclen) (transition state)))
         (recur (inc iter) acc acclen (transition state))))))
 
+
 (def Atrials (generate-single-trials 5 2 0.1 0.1 400))
-(def Btrials (generate-single-trials 5 2 0.1 0.1 50))
-(def ABtrials (generate-dual-trials 5 5 0.1 0.5 Atrials Btrials))
+(def Btrials (generate-single-trials 6 2 0.1 0.1 50))
+(def ABtrials (generate-dual-trials 4 5 0.1 0.5 Atrials Btrials))
 (def initial-state {:A Atrials :B Btrials :AB ABtrials})
 (def mcmc (iterate transition initial-state))
 ;(def mcmc (iterate transition (random-state initial-state)))
 (:gp-time-scale (:AB (assoc-in initial-state [:AB :gp-time-scale] 0.2)))
 
 (def iterates (take-thin 1000 10 transition (assoc-in initial-state [:AB :gp-time-scale] 0.3)))
-(def iterates2 (take-thin 1 1 transition initial-state))
+(def iterates (take-thin 100 1 transition initial-state))
+(def iterates2 (take-thin 1000 10 transition initial-state))
 (def foo (doall (update-dual-G (update-probabilities (update-dual-gp-time-scale (update-dual-gp-var (update-dual-gp-mean (update-dual-switching (update-dual-trials initial-state)))))))))
-(last iterates2)
+(last iterates)
 (def iterates (take 2 (take-nth 2000 mcmc)))
 (def iterates (take-thin 200 10 mcmc))
 (last iterates)
@@ -667,13 +740,38 @@
 (:trials ABtrials)
 (first (:trials  ABtrials))
 (:A (:y (update-dual-ys-pg (fn [x] 0) (fn [x] 0) (first (:trials ABtrials)))))
-(+ 1 2)
+(spit "initial-state" (json/write-str (strip-intensity initial-state)))
+(def surya-data (json/read-str (slurp "surya-data")))
+(defn convert-to-seconds [x] (map #(/ % 1000) x))
+(def Atimes (map convert-to-seconds (get-in surya-data ["spiketimes" "A"])))
+(def Btimes (map convert-to-seconds (get-in surya-data ["spiketimes" "B"])))
+(def ABtimes (map convert-to-seconds (get-in surya-data ["spiketimes" "AB"])))
+(def Aemptytrials (generate-single-trials (count Atimes) 2 0.1 0.1 400))
+(def Bemptytrials (generate-single-trials (count Btimes) 2 0.1 0.1 100))
+(def Atrials (assoc Aemptytrials :trials (map (fn [[trial times]] (assoc trial :obs-times times)) (map vector (:trials Aemptytrials) Atimes))))
+(def Btrials (assoc Bemptytrials :trials (map (fn [[trial times]] (assoc trial :obs-times times)) (map vector (:trials Bemptytrials) Btimes))))
+(def ABemptytrials (generate-dual-trials (count ABtimes) 5 0.1 0.5 Atrials Btrials))
+(def ABtrials (assoc ABemptytrials :trials (map (fn [[trial times]] (assoc trial :obs-times times)) (map vector (:trials ABemptytrials) ABtimes))))
+(def initial-state {:A Atrials :B Btrials :AB ABtrials})
 
 
 
-(take-thin 10 15 inc 1)
-(take 10 (take-nth 15 (iterate inc 1)))
 
+(defn plot-mean-prior-var [iterates]
+  (plot/histogram (map (fn [x] (get-in x [:AB :mean-prior-var])) iterates) :bins 100))
+
+(defn plot-switch-probability [iterates]
+  (plot/histogram (map (fn [x] (get-in x [:AB :switch-p])) iterates) :bins 100))
+
+(defn plot-dp-density [iterates]
+  (let [concentration (:concentration (:AB (first iterates)))
+        mean-prior-vars (map (fn [x] (get-in x [:AB :mean-prior-var])) iterates)
+        trials (map (fn [x] (get-in x [:AB :trials])) iterates)
+        params (map (fn [x] (map :dp-param x)) trials)
+        pred-fn-draws (map (fn [params mean-prior-var] (d/pdf (d/marginal (d/normal :mu mean-prior-var) (d/posterior-predictive params :G (d/dirichlet-process concentration base-measure))))) params mean-prior-vars)
+        ]
+    (apply plot/compose (map (fn [p] (plot/plot p [-5 5] :colour "skyblue" :opacity 0.1)) pred-fn-draws))
+    ))
 
 
 (defn plot-intensity
@@ -796,7 +894,7 @@
         switching (map #(:switching (nth (get-in % [:AB :trials]) i)) iterates)
         switch-prob (mean switching)
         switch-trace (plot/list-plot switching :joined true)
-        gp-time-scale-trace (plot/list-plot gp-time-scale :joined true)
+        gp-time-scale-trace (plot/histogram gp-time-scale :bins 30)
         switch-plot (plot/bar-chart ["Switching" "Non Switching"] [switch-prob (- 1 switch-prob)])
         mean-histogram (plot/histogram gp-mean-AB :bins 30)
         mean-traceplot (plot/list-plot gp-mean-AB :joined true)
@@ -811,7 +909,8 @@
 (defn plot-probs [iterates]
   (let [probs (map (fn [x] (:gp-time-probabilities (:AB x))) iterates)
         summedprobs (reduce add probs)
-        normalprobs (div summedprobs (count iterates))]))
+        normalprobs (div summedprobs (count iterates))]
+    normalprobs))
 
 
 
@@ -1068,3 +1167,11 @@
 
 (defn funzz [{{x :x, y :y} :q, :as state} ] (assoc-in state [:q :x] (inc x) ))
 (funzz my-nested-hashmap)
+
+
+
+
+
+(def reducer (fn [p [m n]] (d/posterior [m] (d/normal n :s2) p)))
+(reduce reducer (d/inverse-gamma 3 2) [[5 3] [3 2]])
+
