@@ -1,7 +1,6 @@
 (ns ipp4clj.multiplexing
   (:require [clojure.core.matrix :refer :all]
             [incanter.stats :refer :all]
-            [incanter.charts :refer :all]
             [incanter.core :as ic]
             [clojure.data.avl :as avl]
             [ssm4clj.core :refer :all]
@@ -24,7 +23,6 @@
         trues (get bool-map true)
         falses (get bool-map false)]
     [trues (if (nil? falses) [] falses)]))
-
 
 (defn randomize-single-trials [C]
   (let [{max-intensity :max-intensity
@@ -605,6 +603,13 @@
         new-mean (sample-normal 1 :mean (first mus2) :sd (sqrt (second mus2)))]
     (assoc-in state [typ :gp-mean] new-mean)))
 
+(defn update-single-gp-time-scale-approx [typ state]
+  (let [{gp-var :gp-var
+         F :F} (typ state)
+        logconditional (fn [x] (logpdf-prior-gp-approx F gp-var x))
+        logliks (map logconditional [0.1 0.2 0.3 0.4 0.5])]
+    (assoc-in state [typ :gp-time-scale] (d/sample (d/discrete-real [0.1 0.2 0.3 0.4 0.5] logliks :log? true)))))
+
 (defn update-single-gp-time-scale [times obs obs-var typ state]
   (let [{gp-var :gp-var
          gp-time-scale :gp-time-scale
@@ -613,6 +618,11 @@
         conditional (fn [x] (+ (logprior-gp-time-scale x)
                                (log-likelihood times centered-obs obs-var gp-var x)))]
     (assoc-in state [typ :gp-time-scale] (sample-slice conditional 1 gp-time-scale))))
+
+(defn update-single-gp-var-approx [typ state]
+  (let [{F :F
+         gp-time-scale :gp-time-scale} (typ state)]
+    (assoc-in state [typ :gp-var] (d/sample (variance-full-conditional-approx F gp-time-scale)))))
 
 (defn update-single-gp-var [times obs obs-var typ state]
   (let [{gp-var :gp-var
@@ -630,6 +640,24 @@
         centered-obs (map (fn [x] (- x gp-mean)) obs)
         pivots (FFBS times centered-obs obs-var gp-var gp-time-scale)]
     (assoc-in state [typ :F] (sample-gp pivots gp-var gp-time-scale))))
+
+(defn update-single-intensity-approx [typ state]
+  (let [single-ys (map :y (get-in state [typ :trials]))
+        dual-ys (map (fn [x] (get-in x [:y typ])) (get-in state [:AB :trials]))
+        y (apply merge (concat single-ys dual-ys))
+        times (keys y)
+        obs (map first (vals y))
+        obs-var (map second (vals y))
+        update-gp-mean (partial update-single-gp-mean times obs obs-var typ)
+        update-gp-time-scale (partial update-single-gp-time-scale-approx typ)
+        update-gp-var (partial update-single-gp-var-approx typ)
+        update-F (partial update-single-F times obs obs-var typ)
+        update (comp update-gp-var
+                     update-gp-time-scale
+                     update-F
+                     update-gp-mean
+                     )]
+    (update state)))
 
 (defn update-single-intensity [typ state]
   (let [single-ys (map :y (get-in state [typ :trials]))
@@ -727,7 +755,6 @@
           (recur (inc iter) (conj acc (strip state)) (inc acclen) (transition state)))
         (recur (inc iter) acc acclen (transition state))))))
 
-(first (take-thin 5 1 inc 1))
 
 (def Atrials (generate-single-trials 20 2 0.1 0.1 400))
 (def Btrials (generate-single-trials 20 2 0.1 0.1 50))
@@ -810,13 +837,18 @@
 (def update-gp-mean (partial update-single-gp-mean times obs obs-var :A))
 (def update-gp-time-scale (partial update-single-gp-time-scale times obs obs-var :A))
 (def update-gp-var (partial update-single-gp-var times obs obs-var :A))
+(def update-gp-time-scale-approx (partial update-single-gp-time-scale-approx :A))
+(def update-gp-var-approx (partial update-single-gp-var-approx :A))
 (def update-F (partial update-single-F times obs obs-var :A))
 (def foo (time (update-gp-mean test-state)))
 (def foo (time (update-gp-time-scale test-state)))
 (def foo (time (update-gp-var test-state)))
 (def foo (time (update-F test-state)))
+(def foo (time (update-gp-time-scale-approx test-state)))
+(def foo (time (update-gp-var-approx test-state)))
 (count @(:data (meta (:F (:A test-state)))))
 (count times)
+()
 
 (def new-state (first (take 3 (iterate transition initial-state))))
 
